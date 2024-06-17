@@ -28,14 +28,17 @@ type FetchTaskArgs struct {
 
 type FetchTaskReply struct {
 	TaskType int // 0-no task, 1-map, 2-reduce
-	X        int // index of map task
-	Y        int // index of reduce task
+	FileName string
+	X        int // during mapping, we need index of reduce task to merge mr-Y-[X]
+	NReduce  int // during mapping, we need reduce task counts to split to mr-[Y]-X
+	Y        int // during reducing, we need index of reduce task to merge mr-[Y]-*
 }
 
 const TaskTypeNone = 0
 const TaskTypeMap = 1
 const TaskTypeReduce = 2
 const TaskTypeWait = 10
+const TaskTypeExit = 999
 
 // Add your RPC definitions here.
 

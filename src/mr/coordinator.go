@@ -11,8 +11,8 @@ import "net/http"
 
 type Coordinator struct {
 	// task count
-	mapTaskCnt    int
-	reduceTaskCnt int
+	NMap    int
+	NReduce int
 
 	// task status management
 	mu               sync.Mutex   // to protect the following global states
@@ -20,8 +20,9 @@ type Coordinator struct {
 	reduceTaskStatus []TaskStatus // init, doing, done
 
 	// task distribute
-	mapTaskCh    chan int   // file[X], index to do map
-	reduceTaskCh []chan int // mr-Y-X, file index to do reduce
+	inputFiles   []string
+	mapFileCh    chan int // file index to do map
+	reduceTaskCh chan int // reducer ids
 }
 
 type TaskStatus int
@@ -45,10 +46,12 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) error {
 
 	select {
-	case mapTaskIdx := <-c.mapTaskCh:
+	case X := <-c.mapFileCh:
 		// get map task
 		reply.TaskType = TaskTypeMap
-		reply.X = mapTaskIdx
+		reply.FileName = c.inputFiles[X]
+		reply.X = X
+		reply.NReduce = c.NReduce
 	default:
 
 		// maybe all map task is processing
@@ -59,21 +62,16 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 		}
 
 		// if all map task done, check reduce tasks
-		if args.WorkerId < len(c.reduceTaskCh) {
-			select {
-			// if no map task, get reduce task
-			case reduceTaskIdx := <-c.reduceTaskCh[args.WorkerId]:
-				reply.TaskType = TaskTypeReduce
-				reply.Y = args.WorkerId
-				reply.X = reduceTaskIdx
-			default:
-				// if no reduce task return
-				reply.TaskType = TaskTypeNone
-			}
-		} else {
-			// no task for you
+		select {
+		// if no map task, get reduce task
+		case reducerId := <-c.reduceTaskCh:
+			reply.TaskType = TaskTypeReduce
+			reply.Y = reducerId
+		default:
+			// if no reduce task return
 			reply.TaskType = TaskTypeNone
 		}
+
 	}
 
 	return nil
@@ -120,17 +118,18 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	nMap := len(files)
 
 	c := Coordinator{
-		mapTaskCnt:       nMap,
-		reduceTaskCnt:    nReduce,
+		NMap:             nMap,
+		NReduce:          nReduce,
 		mapTaskStatus:    make([]TaskStatus, nMap),
 		reduceTaskStatus: make([]TaskStatus, nReduce),
-		mapTaskCh:        make(chan int, nMap),
-		reduceTaskCh:     make([]chan int, nReduce),
+		mapFileCh:        make(chan int, nMap),
+		reduceTaskCh:     make(chan int, nReduce),
+		inputFiles:       files,
 	}
 
 	// Your code here.
 	for i := range files {
-		c.mapTaskCh <- i
+		c.mapFileCh <- i
 	}
 
 	c.server()
