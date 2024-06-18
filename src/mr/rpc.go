@@ -51,7 +51,7 @@ type FetchTaskReply struct {
 	NMap     int // to iterate over N map files
 }
 
-const TaskTypeNone = 0
+// const TaskTypeNone = 0
 const TaskTypeMap = 1
 const TaskTypeReduce = 2
 const TaskTypeWait = 10

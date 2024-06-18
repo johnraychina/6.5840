@@ -72,8 +72,13 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 			reply.NMap = c.NMap
 			reply.NReduce = c.NReduce
 		default:
-			// if no reduce task return
-			reply.TaskType = TaskTypeNone
+			if !c.allReduceTaskDone() {
+				reply.TaskType = TaskTypeWait
+				return nil
+			} else {
+				// if no reduce task return
+				reply.TaskType = TaskTypeExit
+			}
 		}
 
 	}
@@ -142,6 +147,15 @@ func (c *Coordinator) allMapTaskDone() bool {
 	return true
 }
 
+func (c *Coordinator) allReduceTaskDone() bool {
+	for _, s := range c.reduceTaskStatus {
+		if s != TaskStatusDone {
+			return false
+		}
+	}
+	return true
+}
+
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
@@ -159,9 +173,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		inputFiles:       files,
 	}
 
-	// Your code here.
 	for i := range files {
 		c.mapFileCh <- i
+	}
+	for i := 0; i < nReduce; i++ {
+		c.reduceTaskCh <- i
 	}
 
 	c.server()

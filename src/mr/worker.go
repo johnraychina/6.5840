@@ -47,8 +47,8 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		// execute task
 		switch task.TaskType {
 
-		case TaskTypeNone:
-			continue
+		//case TaskTypeNone:
+		//	continue
 
 		case TaskTypeMap:
 			doMap(workerId, task, mapf)
@@ -58,7 +58,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 
 		case TaskTypeWait:
 			log.Printf("no task for the moment, sleep")
-			time.Sleep(10 * time.Second)
+			time.Sleep(5 * time.Second)
 
 		case TaskTypeExit:
 			log.Printf("all task done, exit")
@@ -77,7 +77,7 @@ func doReduce(workerId int, task FetchTaskReply, reducef func(string, []string) 
 		}
 	}()
 
-	outFileName := fmt.Sprintf("mr-%d", task.Y)
+	outFileName := fmt.Sprintf("mr-out-%d", task.Y)
 	outFile, err := os.OpenFile(outFileName, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		panic(err)
@@ -86,26 +86,29 @@ func doReduce(workerId int, task FetchTaskReply, reducef func(string, []string) 
 
 	// for each files mr-Y-X
 	// reduce to mr-Y.out
+	var kva []KeyValue
 	for X := 0; X < task.NMap; X++ {
-		reduceEach(task.Y, X, reducef, outFile)
+		inFileName := fmt.Sprintf("mr-%d-%d", task.Y, X)
+
+		// open file
+		iFile, err1 := os.Open(inFileName)
+		if err1 != nil {
+			panic(err1)
+		}
+
+		// decode
+		kva = append(kva, decode(iFile)...)
+		iFile.Close()
 	}
 
-	// todo report task result
+	reduceAll(kva, reducef, outFile)
+
+	// report task result
 	ReportTask(workerId, task, TaskStatusDone)
 }
 
-func reduceEach(Y int, X int, reducef func(string, []string) string, outFile *os.File) {
-	inFileName := fmt.Sprintf("mr-%d-%d", Y, X)
+func reduceAll(kva []KeyValue, reducef func(string, []string) string, outFile *os.File) {
 
-	// open file
-	iFile, err1 := os.Open(inFileName)
-	if err1 != nil {
-		panic(err1)
-	}
-	defer iFile.Close()
-
-	// decode
-	kva := decode(iFile)
 	sort.Sort(ByKey(kva))
 
 	// group by key and reduce
