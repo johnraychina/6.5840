@@ -39,14 +39,22 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	workerId := os.Getpid()
+	notOkCnt := 0
 
 	// loop to get task or exit if all works are done
 	for {
 		// get Map or Reduce task from coordinator
 		task, ok := FetchTask(workerId)
 		if !ok {
-			continue
+			if notOkCnt < 3 {
+				notOkCnt++
+				continue
+			}
+			log.Printf("FetchTask failed over 3 times, exit")
+			return
 		}
+		// reset
+		notOkCnt = 0
 
 		// execute task
 		switch task.TaskType {
@@ -65,7 +73,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			time.Sleep(5 * time.Second)
 
 		case TaskTypeExit:
-			//log.Printf("all task done, exit")
+			log.Printf("all task done, exit")
 			return
 		}
 	}

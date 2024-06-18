@@ -48,6 +48,8 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 
 	select {
 	case X := <-c.mapFileCh:
+		// use channel to do concurrent fetch & status locking
+		c.mapTaskStatus[X] = TaskStatusDoing
 		// get map task
 		reply.TaskType = TaskTypeMap
 		reply.FileName = c.inputFiles[X]
@@ -67,6 +69,8 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 		select {
 		// if no map task, get reduce task
 		case reducerId := <-c.reduceTaskCh:
+			// use channel to do concurrent fetch & status locking
+			c.reduceTaskStatus[reducerId] = TaskStatusDoing
 			reply.TaskType = TaskTypeReduce
 			reply.Y = reducerId
 			reply.NMap = c.NMap
@@ -104,10 +108,16 @@ func (c *Coordinator) ReportTask(args *ReportArgs, reply *ReportReply) error {
 
 	// todo task timeout + fallback
 	if args.TaskType == TaskTypeMap {
-		c.mapTaskStatus[args.X] = args.TaskStatus
+		if c.mapTaskStatus[args.X] != TaskStatusDone {
+			// only set non-terminal status
+			c.mapTaskStatus[args.X] = args.TaskStatus
+		}
 		reply.Ok = true
 	} else if args.TaskType == TaskTypeReduce {
-		c.reduceTaskStatus[args.X] = args.TaskStatus
+		if c.mapTaskStatus[args.X] != TaskStatusDone {
+			// only set non-terminal status
+			c.reduceTaskStatus[args.X] = args.TaskStatus
+		}
 		reply.Ok = true
 	}
 
