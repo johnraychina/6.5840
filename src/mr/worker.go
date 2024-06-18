@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -45,28 +46,118 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 
 		// execute task
 		switch task.TaskType {
+
 		case TaskTypeNone:
 			continue
-		case TaskTypeMap:
-			log.Printf("start map task:%+v", task)
-			contents := readAll(task.FileName)
-			kva := mapf(task.FileName, contents)
-			sort.Sort(ByKey(kva))
-			writeIntermediate(kva, task.X, task.NReduce)
 
-			// report task result
+		case TaskTypeMap:
+			doMap(workerId, task, mapf)
+
 		case TaskTypeReduce:
-			log.Printf("start reduce task:%+v", task)
-			//todo reducef(key, values)
-			// todoreport task result
+			doReduce(workerId, task, reducef)
+
 		case TaskTypeWait:
 			log.Printf("no task for the moment, sleep")
 			time.Sleep(10 * time.Second)
+
 		case TaskTypeExit:
 			log.Printf("all task done, exit")
 			return
 		}
 	}
+}
+
+func doReduce(workerId int, task FetchTaskReply, reducef func(string, []string) string) {
+	log.Printf("start reduce task:%+v", task)
+
+	defer func() {
+		if e := recover(); e != nil {
+			log.Printf("reduce task failed:%+v", e)
+			ReportTask(workerId, task, TaskStatusInit) // task failed, reset to init
+		}
+	}()
+
+	outFileName := fmt.Sprintf("mr-%d", task.Y)
+	outFile, err := os.OpenFile(outFileName, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		panic(err)
+	}
+	defer outFile.Close()
+
+	// for each files mr-Y-X
+	// reduce to mr-Y.out
+	for X := 0; X < task.NMap; X++ {
+		reduceEach(task.Y, X, reducef, outFile)
+	}
+
+	// todo report task result
+	ReportTask(workerId, task, TaskStatusDone)
+}
+
+func reduceEach(Y int, X int, reducef func(string, []string) string, outFile *os.File) {
+	inFileName := fmt.Sprintf("mr-%d-%d", Y, X)
+
+	// open file
+	iFile, err1 := os.Open(inFileName)
+	if err1 != nil {
+		panic(err1)
+	}
+	defer iFile.Close()
+
+	// decode
+	kva := decode(iFile)
+	sort.Sort(ByKey(kva))
+
+	// group by key and reduce
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+
+		output := reducef(kva[i].Key, values)
+		_, err2 := fmt.Fprintf(outFile, "%v %v\n", kva[i].Key, output)
+		if err2 != nil {
+			panic(err2)
+		}
+		i = j
+	}
+}
+
+func decode(file *os.File) (kva []KeyValue) {
+	dec := json.NewDecoder(file)
+	for {
+		var kv KeyValue
+		if err := dec.Decode(&kv); err != nil {
+			break
+		}
+		kva = append(kva, kv)
+	}
+	return kva
+}
+
+func doMap(workerId int, task FetchTaskReply, mapf func(string, string) []KeyValue) {
+	log.Printf("start map task:%+v", task)
+	defer func() {
+		if e := recover(); e != nil {
+			log.Printf("map task failed:%+v", e)
+			ReportTask(workerId, task, TaskStatusInit) // task failed, reset to init
+		}
+	}()
+
+	contents := readAll(task.FileName)
+	kva := mapf(task.FileName, contents)
+	sort.Sort(ByKey(kva))
+	writeIntermediate(kva, task.X, task.NReduce)
+
+	// report task result
+	ReportTask(workerId, task, TaskStatusDone)
 }
 
 // write key-value arrays to intermediate files: mr-Y-X
@@ -85,7 +176,9 @@ func writeIntermediate(intermediate []KeyValue, X int, NReduce int) []string {
 	// write kv entries to temp files of mr-Y-X
 	for _, kv := range intermediate {
 		Y := ihash(kv.Key) % NReduce
-		_, err := fmt.Fprintf(tempFiles[Y], "%v\n", kv.Key)
+		// encode kv to file
+		enc := json.NewEncoder(tempFiles[Y])
+		err := enc.Encode(kv)
 		if err != nil {
 			panic(err)
 		}
@@ -127,6 +220,35 @@ func FetchTask(workerId int) FetchTaskReply {
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.FetchTask", &args, &reply)
+	if ok {
+		// reply.Y should be 100.
+		fmt.Printf("reply %+v\n", reply)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
+	return reply
+}
+
+func ReportTask(workerId int, task FetchTaskReply, status TaskStatus) ReportReply {
+
+	// declare an argument structure.
+	args := ReportArgs{
+		WorkerId:   workerId,
+		TaskType:   task.TaskType,
+		X:          task.X,
+		Y:          task.Y,
+		TaskStatus: status,
+		Cost:       0, //todo
+	}
+
+	// declare a reply structure.
+	reply := ReportReply{}
+
+	// send the RPC request, wait for the reply.
+	// the "Coordinator.Example" tells the
+	// receiving server that we'd like to call
+	// the Example() method of struct Coordinator.
+	ok := call("Coordinator.ReportTask", &args, &reply)
 	if ok {
 		// reply.Y should be 100.
 		fmt.Printf("reply %+v\n", reply)

@@ -22,16 +22,33 @@ type ExampleReply struct {
 	Y int
 }
 
+type ReportArgs struct {
+	WorkerId int // who am I
+
+	TaskType int // 0-no task, 1-map, 2-reduce
+	X        int // map task id
+	Y        int // reduce task id
+
+	TaskStatus TaskStatus // task status
+	Cost       int64      // time cost
+}
+
+type ReportReply struct {
+	Ok  bool
+	Msg string
+}
+
 type FetchTaskArgs struct {
-	WorkerId int // WorkerId, also as reducer index Y
+	WorkerId int // who am I
 }
 
 type FetchTaskReply struct {
 	TaskType int // 0-no task, 1-map, 2-reduce
 	FileName string
-	X        int // during mapping, we need index of reduce task to merge mr-Y-[X]
-	NReduce  int // during mapping, we need reduce task counts to split to mr-[Y]-X
-	Y        int // during reducing, we need index of reduce task to merge mr-[Y]-*
+	X        int // mapper task id to process files[X]
+	NReduce  int // to iterate over reducers
+	Y        int // reducer task id to merge mr-[Y]-X
+	NMap     int // to iterate over N map files
 }
 
 const TaskTypeNone = 0

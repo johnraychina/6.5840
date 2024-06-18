@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"errors"
 	"log"
 	"sync"
 )
@@ -51,6 +52,7 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 		reply.TaskType = TaskTypeMap
 		reply.FileName = c.inputFiles[X]
 		reply.X = X
+		reply.NMap = c.NMap
 		reply.NReduce = c.NReduce
 	default:
 
@@ -67,11 +69,41 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 		case reducerId := <-c.reduceTaskCh:
 			reply.TaskType = TaskTypeReduce
 			reply.Y = reducerId
+			reply.NMap = c.NMap
+			reply.NReduce = c.NReduce
 		default:
 			// if no reduce task return
 			reply.TaskType = TaskTypeNone
 		}
 
+	}
+
+	return nil
+}
+
+func (c *Coordinator) ReportTask(args *ReportArgs, reply *ReportReply) error {
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if args.X < 0 || args.X >= c.NMap {
+		reply.Ok = false
+		reply.Msg = "map task id over range"
+		return errors.New("map task id over range")
+	}
+	if args.Y < 0 || args.Y >= c.NReduce {
+		reply.Ok = false
+		reply.Msg = "reduce task id over range"
+		return errors.New("reduce task id over range")
+	}
+
+	// todo task timeout + fallback
+	if args.TaskType == TaskTypeMap {
+		c.mapTaskStatus[args.X] = args.TaskStatus
+		reply.Ok = true
+	} else if args.TaskType == TaskTypeReduce {
+		c.reduceTaskStatus[args.X] = args.TaskStatus
+		reply.Ok = true
 	}
 
 	return nil
