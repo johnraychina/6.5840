@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"time"
 )
@@ -42,7 +43,10 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 	// loop to get task or exit if all works are done
 	for {
 		// get Map or Reduce task from coordinator
-		task := FetchTask(workerId)
+		task, ok := FetchTask(workerId)
+		if !ok {
+			continue
+		}
 
 		// execute task
 		switch task.TaskType {
@@ -57,11 +61,11 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			doReduce(workerId, task, reducef)
 
 		case TaskTypeWait:
-			log.Printf("no task for the moment, sleep")
+			//log.Printf("no task for the moment, sleep")
 			time.Sleep(5 * time.Second)
 
 		case TaskTypeExit:
-			log.Printf("all task done, exit")
+			//log.Printf("all task done, exit")
 			return
 		}
 	}
@@ -73,6 +77,7 @@ func doReduce(workerId int, task FetchTaskReply, reducef func(string, []string) 
 	defer func() {
 		if e := recover(); e != nil {
 			log.Printf("reduce task failed:%+v", e)
+			PrintStackTrace()
 			ReportTask(workerId, task, TaskStatusInit) // task failed, reset to init
 		}
 	}()
@@ -146,10 +151,11 @@ func decode(file *os.File) (kva []KeyValue) {
 }
 
 func doMap(workerId int, task FetchTaskReply, mapf func(string, string) []KeyValue) {
-	log.Printf("start map task:%+v", task)
+	//log.Printf("start map task:%+v", task)
 	defer func() {
 		if e := recover(); e != nil {
-			log.Printf("map task failed:%+v", e)
+			log.Printf("map task %+v err: %+v", task, e)
+			PrintStackTrace()
 			ReportTask(workerId, task, TaskStatusInit) // task failed, reset to init
 		}
 	}()
@@ -172,7 +178,11 @@ func writeIntermediate(intermediate []KeyValue, X int, NReduce int) []string {
 	tempFiles := make([]*os.File, NReduce)
 	for Y := 0; Y < NReduce; Y++ {
 		intermediateFiles[Y] = fmt.Sprintf("mr-%d-%d", Y, X)
-		temp, _ := os.CreateTemp("mr-tmp", intermediateFiles[Y]+"-*")
+		temp, err := os.CreateTemp(os.TempDir(), intermediateFiles[Y]+"-*")
+		if err != nil {
+			log.Printf("CreateTemp error:%+v", err)
+			panic(err)
+		}
 		tempFiles[Y] = temp
 	}
 
@@ -183,6 +193,7 @@ func writeIntermediate(intermediate []KeyValue, X int, NReduce int) []string {
 		enc := json.NewEncoder(tempFiles[Y])
 		err := enc.Encode(kv)
 		if err != nil {
+			log.Printf("encode error:%+v", err)
 			panic(err)
 		}
 	}
@@ -190,6 +201,7 @@ func writeIntermediate(intermediate []KeyValue, X int, NReduce int) []string {
 	for Y := 0; Y < NReduce; Y++ {
 		tempFiles[Y].Close()
 		if err := os.Rename(tempFiles[Y].Name(), intermediateFiles[Y]); err != nil {
+			log.Printf("Rename error:%+v", err)
 			panic(err)
 		}
 	}
@@ -210,26 +222,12 @@ func readAll(filename string) string {
 	return string(content)
 }
 
-func FetchTask(workerId int) FetchTaskReply {
-
-	// declare an argument structure.
+func FetchTask(workerId int) (FetchTaskReply, bool) {
 	args := FetchTaskArgs{WorkerId: workerId}
-
-	// declare a reply structure.
 	reply := FetchTaskReply{}
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.FetchTask", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply %+v\n", reply)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
-	return reply
+	return reply, ok
 }
 
 func ReportTask(workerId int, task FetchTaskReply, status TaskStatus) ReportReply {
@@ -252,11 +250,8 @@ func ReportTask(workerId int, task FetchTaskReply, status TaskStatus) ReportRepl
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.ReportTask", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply %+v\n", reply)
-	} else {
-		fmt.Printf("call failed!\n")
+	if !ok {
+		fmt.Printf("ReportTask failed!\n")
 	}
 	return reply
 }
@@ -307,4 +302,10 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func PrintStackTrace() {
+	var buf [9192]byte
+	n := runtime.Stack(buf[:], false)
+	fmt.Printf("Stack trace:\n%s\n", buf[:n])
 }
