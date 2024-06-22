@@ -1,12 +1,17 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"time"
+)
 
 // Debugging
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
-		log.Printf(format, a...)
+		now := time.Now()
+		a = append(a, now.UnixMilli())
+		log.Printf(format+" %d ms", a...)
 	}
 }
