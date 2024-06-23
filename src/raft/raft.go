@@ -297,7 +297,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// I won't vote two candidates in the same term.
-	DPrintf("RequestVote[reject] term:%d, me:%d, voteForId:%d != candidateId:%d != ", args.Term, rf.me, rf.voteForId, args.CandidateId)
+	DPrintf("RequestVote[reject] term:%d, me:%d, voteForId:%d != candidateId:%d", args.Term, rf.me, rf.voteForId, args.CandidateId)
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 	return
@@ -408,13 +408,13 @@ func (rf *Raft) ticker() {
 			rf.mu.Unlock()
 
 			// hey guys, please vote for me!
-			DPrintf("StartElection me:%d term:%d", rf.me, currentTerm)
-			granted, peerTermLarger := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
+			DPrintf("Election[Start] me:%d term:%d", rf.me, currentTerm)
+			granted := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
 			// any peer with larger term can stop me being the leader
-			if peerTermLarger {
-				DPrintf("Election[PeerTermLarger] me:%d, term:%d", rf.me, currentTerm)
-				continue
-			}
+			//if peerTermLarger {
+			//	DPrintf("Election[PeerTermLarger] me:%d, term:%d", rf.me, currentTerm)
+			//	continue
+			//}
 
 			if granted*2 <= len(rf.peers) {
 				DPrintf("Election[NotEnoughGrants] me:%d, term:%d, granted:%d", rf.me, currentTerm, granted)
@@ -452,10 +452,11 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int) (int, bool) {
+func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int) int {
 
-	//todo go routine
-	granted := 1 // I've voted for myself
+	grantCh := make(chan int, len(rf.peers))
+	rejectCh := make(chan int, len(rf.peers))
+
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -469,21 +470,44 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 		}
 		reply := &RequestVoteReply{}
 
-		ok := rf.sendRequestVote(i, args, reply)
-		if ok {
+		peer := i
+		// 由于这里rpc可能阻塞3s超时，导致竞选没及时发出去，必须用 go routine来避免这种问题
+		go func() {
+			ok := rf.sendRequestVote(peer, args, reply)
+			if !ok {
+				rejectCh <- peer // take rpc error as rejection
+				return
+			}
 			// If my Term less than peers, give up for this Term.
 			// why not vote for the peer here?
 			// peer may have sent RequestVote to me in another thread, and I've voted for him
-			if currentTerm < reply.Term {
-				return 0, true
+			if currentTerm < reply.Term || !reply.VoteGranted {
+				rejectCh <- peer
+				return
 			}
-			if reply.VoteGranted {
-				granted++
-			}
+
+			grantCh <- peer
+			return
+		}()
+	}
+
+	// wait half of the grants or rejections
+	half := len(rf.peers) / 2
+	granted := 1 // I've voted for myself
+	rejected := 0
+	for !rf.killed() {
+		select {
+		case <-grantCh:
+			granted++
+		case <-rejectCh:
+			rejected++
+		}
+		if granted > half || rejected > half {
+			break
 		}
 	}
 
-	return granted, false
+	return granted
 }
 
 // heartBeat broadcasting empty AppendEntries: I'm the leader
@@ -534,19 +558,15 @@ func (rf *Raft) heartBeatPeer(i int, currentTerm, previousLogIndex, previousLogT
 	// todo if over a half of the broadcast is lost, peers won't know I'm the new leader , should I start a new round vote?
 	ok := rf.sendAppendEntries(i, arg, reply)
 	if !ok || !reply.Success {
-		DPrintf("RpcError[heartBeat] leader:%d --> follower:%d", rf.me, i)
+		DPrintf("HeartBeat[RpcError] me:%d --> follower:%d", rf.me, i)
 		return false
 	}
 
 	if currentTerm < reply.Term {
 		// someone get a larger Term in the same time, give up for this Term.
 		// the peer may be broadcasting to me later.
-		DPrintf("TermSuppressedByPeer[heartBeat] me:%d, Term:%d, peer:%d, Term:%d", rf.me, currentTerm, i, reply.Term)
+		DPrintf("HeartBeat[TermSuppressedByPeer] me:%d, Term:%d --> peer:%d, Term:%d", rf.me, currentTerm, i, reply.Term)
 		return false
-	}
-	// The peer may request voting, but I'm already the common leader.
-	if currentTerm == reply.Term {
-		DPrintf("TermsEqual[heartBeat] me:%d, Term:%d, peer:%d, Term:%d", rf.me, currentTerm, i, reply.Term)
 	}
 
 	// todo as a leader, I need to know the followers states by checking each AppendEntriesReply,
@@ -554,6 +574,7 @@ func (rf *Raft) heartBeatPeer(i int, currentTerm, previousLogIndex, previousLogT
 	//rf.nextIndex =
 	//rf.matchIndex =
 	rf.mu.Unlock()
+	DPrintf("HeartBeat[Success] me:%d, Term:%d --> peer:%d, Term:%d", rf.me, currentTerm, i, reply.Term)
 	return true
 }
 

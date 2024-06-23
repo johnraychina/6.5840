@@ -117,14 +117,24 @@ func TestManyElections3A(t *testing.T) {
 		cfg.disconnect(i1)
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
+		DPrintf("[%d][Test1]disconnect %d", ii, i1)
+		DPrintf("[%d][Test1]disconnect %d", ii, i2)
+		DPrintf("[%d][Test1]disconnect %d", ii, i3)
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
+		DPrintf("[Test1]checkOneLeader Sleep")
+		time.Sleep(10 * electionTimeout)
+		DPrintf("[Test1]checkOneLeader Start")
 		cfg.checkOneLeader()
 
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
+		DPrintf("[%d][Test2]connect %d", ii, i1)
+		DPrintf("[%d][Test2]connect %d", ii, i2)
+		DPrintf("[%d][Test3]connect %d", ii, i3)
+
 	}
 
 	cfg.checkOneLeader()
