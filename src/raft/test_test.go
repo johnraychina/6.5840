@@ -123,8 +123,6 @@ func TestManyElections3A(t *testing.T) {
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
-		DPrintf("[Test1]checkOneLeader Sleep")
-		time.Sleep(10 * electionTimeout)
 		DPrintf("[Test1]checkOneLeader Start")
 		cfg.checkOneLeader()
 
