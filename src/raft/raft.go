@@ -513,25 +513,48 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 // heartBeat broadcasting empty AppendEntries: I'm the leader
 // suppress other peers from requesting vote
 func (rf *Raft) heartBeat(currentTerm int, previousLogIndex, previousLogTerm int) {
-	heartBeatSuccess := 1
+	successCh := make(chan int, len(rf.peers))
+	failCh := make(chan int, len(rf.peers))
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 
 		peerId := i
-		success := rf.heartBeatPeer(peerId, currentTerm, previousLogIndex, previousLogTerm)
-		if success {
-			heartBeatSuccess++
+		go func() {
+			success := rf.heartBeatPeer(peerId, currentTerm, previousLogIndex, previousLogTerm)
+			if success {
+				successCh <- peerId
+			} else {
+				failCh <- peerId
+			}
+		}()
+	}
+
+	// wait for over a half successes / failures
+	success := 1
+	fail := 0
+	half := len(rf.peers) / 2
+	for !rf.killed() {
+		select {
+		case <-successCh:
+			success++
+		case <-failCh:
+			fail++
+		}
+
+		if fail > half {
+			break
+		}
+		// over half success
+		// reset my timer, suppress myself from requesting vote
+		// why not reset at the start? I may have lost leadership, I can detect that in this way.
+		if success > half {
+			rf.lastHeartBeatTime = time.Now()
+			break
 		}
 	}
 
-	// over half success
-	// reset my timer, suppress myself from requesting vote
-	if heartBeatSuccess*2 > len(rf.peers) {
-		rf.lastHeartBeatTime = time.Now()
-
-	}
 }
 
 func (rf *Raft) grantVote(args *RequestVoteArgs) {
