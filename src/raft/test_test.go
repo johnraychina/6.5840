@@ -74,8 +74,9 @@ func TestReElection3A(t *testing.T) {
 	// if there's no quorum, no new leader should
 	// be elected.
 	cfg.disconnect(leader2)
+	DPrintf("[Test3]disconnect %d", leader2)
 	cfg.disconnect((leader2 + 1) % servers)
-	DPrintf("[Test3]disconnect %d, %d", leader2, (leader2+1)%servers)
+	DPrintf("[Test3]disconnect %d", (leader2+1)%servers)
 
 	time.Sleep(2 * RaftElectionTimeout)
 
@@ -91,7 +92,7 @@ func TestReElection3A(t *testing.T) {
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
-	DPrintf("[Test5]connect2 %d", leader2)
+	DPrintf("[Test5]connect %d", leader2)
 
 	cfg.checkOneLeader()
 

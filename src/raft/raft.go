@@ -51,7 +51,7 @@ type ApplyMsg struct {
 
 // broadcastTime << electionTimeout << MTBF
 const electionTimeout = 1000 * time.Millisecond
-const heartBeatTimeout = electionTimeout / 10
+const heartBeatTimeout = electionTimeout / 5
 const NoneCandidateId = -1
 
 type LogEntry struct {
@@ -489,18 +489,25 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 // heartBeat broadcasting empty AppendEntries: I'm the leader
 // suppress other peers from requesting vote
 func (rf *Raft) heartBeat(currentTerm int, previousLogIndex, previousLogTerm int) {
-	// reset my timer, suppress myself from requesting vote
-	rf.lastHeartBeatTime = time.Now()
-
+	heartBeatSuccess := 1
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 
 		peerId := i
-		rf.heartBeatPeer(peerId, currentTerm, previousLogIndex, previousLogTerm)
+		success := rf.heartBeatPeer(peerId, currentTerm, previousLogIndex, previousLogTerm)
+		if success {
+			heartBeatSuccess++
+		}
 	}
 
+	// over half success
+	// reset my timer, suppress myself from requesting vote
+	if heartBeatSuccess*2 > len(rf.peers) {
+		rf.lastHeartBeatTime = time.Now()
+
+	}
 }
 
 func (rf *Raft) grantVote(args *RequestVoteArgs) {
@@ -510,9 +517,10 @@ func (rf *Raft) grantVote(args *RequestVoteArgs) {
 	//rf.lastHeartBeatTime = time.Now()
 	rf.voteForId = args.CandidateId
 	rf.currentTerm = args.Term
+	rf.leaderId = NoneCandidateId // convert to follower
 }
 
-func (rf *Raft) heartBeatPeer(i int, currentTerm, previousLogIndex, previousLogTerm int) {
+func (rf *Raft) heartBeatPeer(i int, currentTerm, previousLogIndex, previousLogTerm int) bool {
 
 	arg := &AppendEntriesArg{
 		Term:              rf.currentTerm,
@@ -526,15 +534,15 @@ func (rf *Raft) heartBeatPeer(i int, currentTerm, previousLogIndex, previousLogT
 	// todo if over a half of the broadcast is lost, peers won't know I'm the new leader , should I start a new round vote?
 	ok := rf.sendAppendEntries(i, arg, reply)
 	if !ok || !reply.Success {
-		DPrintf("RpcError[heartBeat] leader:%d, follower:%d, reply:%+v", rf.me, i, reply)
-		return
+		DPrintf("RpcError[heartBeat] leader:%d --> follower:%d", rf.me, i)
+		return false
 	}
 
 	if currentTerm < reply.Term {
 		// someone get a larger Term in the same time, give up for this Term.
 		// the peer may be broadcasting to me later.
 		DPrintf("TermSuppressedByPeer[heartBeat] me:%d, Term:%d, peer:%d, Term:%d", rf.me, currentTerm, i, reply.Term)
-		return
+		return false
 	}
 	// The peer may request voting, but I'm already the common leader.
 	if currentTerm == reply.Term {
@@ -546,6 +554,7 @@ func (rf *Raft) heartBeatPeer(i int, currentTerm, previousLogIndex, previousLogT
 	//rf.nextIndex =
 	//rf.matchIndex =
 	rf.mu.Unlock()
+	return true
 }
 
 // the service or tester wants to create a Raft server. the ports
