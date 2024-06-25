@@ -20,3 +20,13 @@ go test -run 3A
 ```shell
 time go test -run TestBasicAgree3B
 ```
+
+
+```shell
+time go test -run TestRPCBytes3B
+```
+
+
+```shell
+time go test -run 3B
+```
