@@ -83,6 +83,9 @@ type Raft struct {
 	commitIndex       int       // index of highest log entry known to be committed
 	lastApplied       int       // index of highest log entry applied to state machine
 	lastHeartBeatTime time.Time // last heartbeat time
+	commitIndex       int       // index of highest log entry known to be committed,  initialized to 0
+	lastApplied       int       // index of highest log entry applied to state machine,  initialized to 0
+	applyCh           chan ApplyMsg
 
 	// volatile state on leaders
 	// (Reinitialized after election)
@@ -231,13 +234,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	// 5. If leaderCommit > commitIndex, set commitIndex =
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommitIndex > rf.commitIndex {
+		old := rf.commitIndex
 		lastIdx := len(rf.log) - 1
 		rf.commitIndex = min(args.LeaderCommitIndex, lastIdx)
+
+		// follower apply msg after commit
+		rf.applyMsg(old, rf.commitIndex)
 	}
 	rf.mu.Unlock()
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
+}
+
+func (rf *Raft) applyMsg(old int, newCommitIndex int) {
+	if newCommitIndex > old {
+		for k := old + 1; k <= rf.commitIndex; k++ {
+			msg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[k].command,
+				CommandIndex: k,
+			}
+
+			rf.applyCh <- msg
+			DPrintf("[%d]ApplyMsg: %v", rf.me, msg)
+		}
+	}
 }
 
 // example RequestVote RPC arguments structure.
@@ -652,9 +674,13 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 			//If there exists an N such that N > commitIndex, a majority
 			// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 			N := majorityIndex(rf.matchIndex)
+			old := rf.commitIndex
 			rf.commitIndex = max(N, rf.commitIndex)
 
 			rf.mu.Unlock()
+
+			// leader commit apply message
+			rf.applyMsg(old, rf.commitIndex)
 
 			break
 		}
@@ -664,7 +690,7 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 
 func majorityIndex(matchIndex []int) int {
 	slices.Sort(matchIndex)
-	return matchIndex[len(matchIndex)-1] // the middle value
+	return matchIndex[len(matchIndex)/2] // the middle value
 }
 
 func (rf *Raft) getCommands(peerNextIndex int, currentIndex int) []interface{} {
@@ -734,6 +760,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
 	// Your initialization code here (3A, 3B, 3C).
 	// see GetState()
@@ -742,11 +769,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers))
 	// todo when a new leader replaced the old one, we should init nextIndex/matchIndex
 	for i := range rf.nextIndex {
-		rf.nextIndex[i] = 0
+		rf.nextIndex[i] = 1
 	}
 	for i := range rf.matchIndex {
 		rf.matchIndex[i] = 0
 	}
+	rf.commitIndex = 0
+	rf.lastApplied = 0 //todo
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
