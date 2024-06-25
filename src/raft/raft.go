@@ -495,6 +495,7 @@ func (rf *Raft) ticker() {
 				// todo if I'm the leader, I need broadcast heartbeat in my term
 				for !rf.killed() {
 					if term, isLeader := rf.GetState(); isLeader {
+						lastLogIndex = len(rf.log) - 1 // lastLogIndex may change between each heartbeat
 						rf.broadCastAppendEntries(term, lastLogIndex)
 
 						// must smaller than electionTimeout
