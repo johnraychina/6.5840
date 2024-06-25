@@ -711,6 +711,7 @@ func (rf *Raft) delSince(idx int) {
 	//rf.mu.Lock()
 	//rf.mu.Unlock()
 	rf.log = rf.log[:idx]
+	rf.commitIndex = idx
 	if idx == 0 {
 		rf.currentTerm = 0
 	} else {
