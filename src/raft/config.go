@@ -588,7 +588,6 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 						return index
 					}
 				}
-				log.Printf("expect: n=%d cmd=%v index=%d, actual: nd=%d, cmd1=%v", expectedServers, cmd, index, nd, cmd1)
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
