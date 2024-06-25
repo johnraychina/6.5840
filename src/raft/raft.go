@@ -188,7 +188,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	rf.leaderId = args.LeaderId
 
 	preIdx := args.PreviousLogIndex
-	preTerm := args.PreviousLogIndex
+	preTerm := args.PreviousLogTerm
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose Term matches prevLogTerm (§5.3)
 	if preIdx >= 0 && (len(rf.log) <= preIdx || rf.log[preIdx].term != preTerm) {
