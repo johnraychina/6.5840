@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 	"math/rand"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -225,6 +226,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 			rf.log = append(rf.log, entry)
 		}
 	}
+	DPrintf("AppendEntries[success] ")
 
 	// 5. If leaderCommit > commitIndex, set commitIndex =
 	// min(leaderCommit, index of last new entry)
@@ -403,14 +405,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Lock()
 	rf.log = append(rf.log, &LogEntry{term: term, command: command})
-	index := len(rf.log) - 1
+	lastLogIndex := len(rf.log) - 1
 	rf.mu.Unlock()
 
 	go func() {
-		rf.broadCastAppendEntries(term, index)
+		rf.broadCastAppendEntries(term, lastLogIndex)
 	}()
 
-	return index, term, isLeader
+	return lastLogIndex, term, isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -431,6 +433,18 @@ func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
+
+//Leaders:
+//Upon election: send initial empty AppendEntries RPCs (heartbeat) to each server;
+// repeat during idle periods to prevent election timeouts (§5.2)
+//• If command received from client: append entry to local log, respond after entry applied to state machine (§5.3)
+//• If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+//• If successful: update nextIndex and matchIndex for
+//follower (§5.3)
+//• If AppendEntries fails because of log inconsistency:
+//decrement nextIndex and retry (§5.3)
+//• If there exists an N such that N > commitIndex, a majority
+//of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
@@ -558,7 +572,15 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 
 // broadCastAppendEntries broadcasting empty AppendEntries: I'm the leader
 // suppress other peers from requesting vote
-func (rf *Raft) broadCastAppendEntries(currentTerm int, currentIndex int) {
+//
+// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+// • If successful: update nextIndex and matchIndex for
+// follower (§5.3)
+// • If AppendEntries fails because of log inconsistency:
+// decrement nextIndex and retry (§5.3)
+// • If there exists an N such that N > commitIndex, a majority
+// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 	successCh := make(chan int, len(rf.peers))
 	failCh := make(chan int, len(rf.peers))
 
@@ -583,12 +605,20 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, currentIndex int) {
 			PreviousLogIndex:  peerNextIndex - 1, // -1-invalid, log index start at 0
 			PreviousLogTerm:   peerPrevTerm,      // 0-invalid, term start at 1
 			LeaderCommitIndex: rf.commitIndex,
-			Commands:          rf.getCommands(peerNextIndex, currentIndex), // empty if leader won an election and initial broadcast
+			Commands:          rf.getCommands(peerNextIndex, lastLogIndex), // empty if leader won an election and initial broadcast
 		}
 
 		go func() {
+
+			// as a leader, I need to know the followers states by checking each AppendEntriesReply,
 			success := rf.sendPeerAppendEntries(peerId, arg)
 			if success {
+				// If successful: update nextIndex and matchIndex for follower (§5.3)
+				rf.mu.Lock()
+				rf.nextIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands) + 1
+				rf.matchIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands)
+				rf.mu.Unlock()
+
 				successCh <- peerId
 			} else {
 				failCh <- peerId
@@ -615,11 +645,25 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, currentIndex int) {
 		// reset my timer, suppress myself from requesting vote
 		// why not reset at the start? I may have lost leadership, I can detect that in this way.
 		if success > half {
+			rf.mu.Lock()
 			rf.lastHeartBeatTime = time.Now()
+
+			//If there exists an N such that N > commitIndex, a majority
+			// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+			N := majorityIndex(rf.matchIndex)
+			rf.commitIndex = max(N, rf.commitIndex)
+
+			rf.mu.Unlock()
+
 			break
 		}
 	}
 
+}
+
+func majorityIndex(matchIndex []int) int {
+	slices.Sort(matchIndex)
+	return matchIndex[len(matchIndex)-1] // the middle value
 }
 
 func (rf *Raft) getCommands(peerNextIndex int, currentIndex int) []interface{} {
@@ -659,12 +703,6 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) bool {
 	}
 
 	DPrintf("HeartBeat[Success] me:%d, Term:%d --> peer:%d, Term:%d", rf.me, arg.Term, peer, reply.Term)
-
-	// todo as a leader, I need to know the followers states by checking each AppendEntriesReply,
-	rf.mu.Lock()
-	rf.nextIndex[peer] = arg.PreviousLogIndex + len(arg.Commands) + 1
-	//rf.matchIndex =
-	rf.mu.Unlock()
 	return true
 }
 
@@ -700,8 +738,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteForId = NoneCandidateId // candidateId start from 0 to N, default voteForId must be out of it.
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
+	// todo when a new leader replaced the old one, we should init nextIndex/matchIndex
 	for i := range rf.nextIndex {
 		rf.nextIndex[i] = 0
+	}
+	for i := range rf.matchIndex {
+		rf.matchIndex[i] = 0
 	}
 
 	// initialize from state persisted before a crash
