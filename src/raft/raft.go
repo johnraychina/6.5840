@@ -222,10 +222,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 		if len(rf.log) > base+i+1 {
 			//overwrite existing
 			rf.log[base+i] = entry
-			DPrintf("[%d]AppendEntries[overwrite] index:%d, entry:%v", rf.me, base+i, entry)
+			DPrintf("[%d]AppendEntries[overwrite] index:%d, entry:%+v", rf.me, base+i, entry)
 		} else {
 			rf.log = append(rf.log, entry)
-			DPrintf("[%d]AppendEntries[append] index:%d, entry:%v", rf.me, len(rf.log)-1, entry)
+			DPrintf("[%d]AppendEntries[append] index:%d, entry:%+v", rf.me, len(rf.log)-1, entry)
 		}
 	}
 
@@ -256,7 +256,7 @@ func (rf *Raft) applyMsg(old int, newCommitIndex int) {
 			}
 
 			rf.applyCh <- msg
-			DPrintf("[%d]ApplyMsg: %v", rf.me, msg)
+			DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
 		}
 	}
 }
@@ -290,7 +290,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// I've voted for larger term, you're late!
 	if args.Term < rf.currentTerm {
-		DPrintf("RequestVote[reject] candidateId:%d, term:%d < me:%d, currentTerm:%d", args.CandidateId, args.Term, rf.me, rf.currentTerm)
+		DPrintf("[%d]RequestVote[reject] candidateId:%d, term:%d < currentTerm:%d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
@@ -347,8 +347,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			return
 		} else {
-			DPrintf("RequestVote[reject] candidateId:%d, LastLogIndex:%d < me:%d, myLastLogIndex:%d",
-				args.CandidateId, args.LastLogIndex, rf.me, myLastLogIndex)
+			DPrintf("[%d]RequestVote[reject] candidateId:%d, LastLogIndex:%d < myLastLogIndex:%d",
+				rf.me, args.CandidateId, args.LastLogIndex, myLastLogIndex)
 			// candidate's log index less than me: reject
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = false
@@ -357,7 +357,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// I won't vote two candidates in the same term.
-	DPrintf("RequestVote[reject] term:%d, me:%d, voteForId:%d != candidateId:%d", args.Term, rf.me, rf.voteForId, args.CandidateId)
+	DPrintf("[%d]RequestVote[reject] term:%d, voteForId:%d != candidateId:%d", rf.me, rf.currentTerm, rf.voteForId, args.CandidateId)
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 	return
@@ -505,7 +505,9 @@ func (rf *Raft) ticker() {
 			// over half grants
 			// hey guys, I'm the new leader!
 			rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
+			rf.initNextIndex(rf.leaderId)
 			rf.leaderId = rf.me
+
 			go func() {
 				for !rf.killed() {
 					if term, isLeader := rf.GetState(); isLeader {
@@ -640,6 +642,10 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 
 				successCh <- peerId
 			} else {
+				rf.mu.Lock()
+				// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+				rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1) // valid log index starts from 1
+				rf.mu.Unlock()
 				failCh <- peerId
 			}
 		}()
@@ -691,7 +697,9 @@ func majorityIndex(matchIndex []int) int {
 func (rf *Raft) getCommands(peerNextIndex int, currentIndex int) []interface{} {
 	var commands []interface{}
 	for k := peerNextIndex; k <= currentIndex; k++ {
-		commands = append(commands, rf.log[k].command)
+		if k >= 1 { // valid log index starts from 1
+			commands = append(commands, rf.log[k].command)
+		}
 	}
 	return commands
 }
@@ -712,7 +720,7 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) bool {
 
 	// todo if over a half of the broadcast is lost, peers won't know I'm the new leader , should I start a new round vote?
 	ok := rf.sendAppendEntries(peer, arg, reply)
-	DPrintf("sendAppendEntries[%d] --> peer:%d, arg:%+v, reply:%+v, ok:%t", rf.me, peer, arg, reply, ok)
+	DPrintf("[%d]sendAppendEntries --> peer:%d, arg:%+v, reply:%+v, ok:%t", rf.me, peer, arg, reply, ok)
 
 	if !ok {
 		return false
@@ -736,6 +744,14 @@ func (rf *Raft) delSince(idx int) {
 		rf.currentTerm = 0
 	} else {
 		rf.currentTerm = rf.log[idx-1].term
+	}
+}
+
+func (rf *Raft) initNextIndex(oldLeaderId int) {
+	if oldLeaderId != rf.me {
+		for i := range rf.nextIndex {
+			rf.nextIndex[i] = len(rf.log)
+		}
 	}
 }
 

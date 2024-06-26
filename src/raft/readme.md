@@ -30,9 +30,12 @@ time go test -run TestRPCBytes3B
 time go test -run TestFollowerFailure3B
 ```
 
-
+```shell
+time go test -run TestLeaderFailure3B
+```
 
 
 ```shell
+time go test -run TestFailAgree3B
 time go test -run 3B
 ```
