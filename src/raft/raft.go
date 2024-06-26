@@ -675,7 +675,7 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		// why not reset at the start? I may have lost leadership, I can detect that in this way.
 		if success > half {
 			rf.mu.Lock()
-			rf.currentTerm++ // heartbeat done, term++
+			//rf.currentTerm++ // heartbeat done, term++
 			rf.lastHeartBeatTime = time.Now()
 			//If there exists an N such that N > commitIndex, a majority
 			// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
