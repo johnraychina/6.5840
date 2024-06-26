@@ -189,6 +189,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 
 	preIdx := args.PreviousLogIndex
 	preTerm := args.PreviousLogTerm
+	DPrintf("[%d]AppendEntries[arg] preIdx:%d, preTerm:%+v, commands:%+v", rf.me, preIdx, preTerm, args.Commands)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose Term matches prevLogTerm (§5.3)
 	if preIdx >= 1 && (len(rf.log) <= preIdx || rf.log[preIdx].term != preTerm) {
@@ -219,7 +220,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	base := preIdx + 1
 	for i, cmd := range args.Commands {
 		entry := &LogEntry{term: args.Term, command: cmd}
-		if len(rf.log) > base+i+1 {
+		if len(rf.log) > base+i {
 			//overwrite existing
 			rf.log[base+i] = entry
 			DPrintf("[%d]AppendEntries[overwrite] index:%d, entry:%+v", rf.me, base+i, entry)
@@ -254,9 +255,8 @@ func (rf *Raft) applyMsg(old int, newCommitIndex int) {
 				Command:      rf.log[k].command,
 				CommandIndex: k,
 			}
-
-			rf.applyCh <- msg
 			DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
+			rf.applyCh <- msg
 		}
 	}
 }
@@ -511,8 +511,8 @@ func (rf *Raft) ticker() {
 			go func() {
 				for !rf.killed() {
 					if term, isLeader := rf.GetState(); isLeader {
-						lastLogIndex = len(rf.log) - 1 // lastLogIndex may change between each heartbeat
-						rf.broadCastAppendEntries(term, lastLogIndex)
+						lastIdx := len(rf.log) - 1 // lastLogIndex may change between each heartbeat
+						rf.broadCastAppendEntries(term, lastIdx)
 
 						// must smaller than electionTimeout
 						// not too small: The tester requires your Raft to elect a new leader within five seconds of the failure of the old leader (if a majority of peers can still communicate).
@@ -601,6 +601,9 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 	successCh := make(chan int, len(rf.peers))
 	failCh := make(chan int, len(rf.peers))
 
+	rf.nextIndex[rf.me] = lastLogIndex + 1
+	rf.matchIndex[rf.me] = lastLogIndex
+
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -623,9 +626,9 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		arg := &AppendEntriesArg{
 			Term:              currentTerm,
 			LeaderId:          rf.me,
-			PreviousLogIndex:  peerNextIndex - 1, // -1-init, log index start at 0
+			PreviousLogIndex:  peerNextIndex - 1, // 0-init, log index start at 1
 			PreviousLogTerm:   peerPrevTerm,      // 0-init, term start at 1
-			LeaderCommitIndex: rf.commitIndex,    // -1-init, commit index start at 0, append entry this time, then commit it next time(heartbeat)
+			LeaderCommitIndex: rf.commitIndex,    // 0-init, commit index start at 1, append entry this time, then commit it next time(heartbeat)
 			Commands:          commands,
 		}
 
@@ -644,7 +647,8 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 			} else {
 				rf.mu.Lock()
 				// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-				rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1) // valid log index starts from 1
+				rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1)   // valid log index starts from 1
+				rf.matchIndex[peerId] = max(rf.matchIndex[peerId]-1, 0) // match log index starts from 0
 				rf.mu.Unlock()
 				failCh <- peerId
 			}
@@ -671,10 +675,12 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		// why not reset at the start? I may have lost leadership, I can detect that in this way.
 		if success > half {
 			rf.mu.Lock()
+			rf.currentTerm++ // heartbeat done, term++
 			rf.lastHeartBeatTime = time.Now()
 			//If there exists an N such that N > commitIndex, a majority
 			// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 			N := majorityIndex(rf.matchIndex)
+			DPrintf("[%d]half success, commitIndex:%d, N:%d, matchIndex:%v", rf.me, rf.commitIndex, N, rf.matchIndex)
 			old := rf.commitIndex
 			rf.commitIndex = max(N, rf.commitIndex)
 
@@ -682,7 +688,6 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 
 			// leader commit apply message
 			rf.applyMsg(old, rf.commitIndex)
-
 			break
 		}
 	}
@@ -690,8 +695,9 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 }
 
 func majorityIndex(matchIndex []int) int {
-	slices.Sort(matchIndex)
-	return matchIndex[len(matchIndex)/2] // the middle value
+	temp := slices.Clone(matchIndex)
+	slices.Sort(temp)
+	return temp[len(temp)/2] // the middle value
 }
 
 func (rf *Raft) getCommands(peerNextIndex int, currentIndex int) []interface{} {
