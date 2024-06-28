@@ -202,10 +202,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose Term matches prevLogTerm (§5.3)
-	if preLogIdx >= 1 && (len(rf.log) <= preLogIdx || rf.log[preLogIdx].term != preLogTerm) {
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		return
+	if preLogIdx >= 1 {
+		if len(rf.log) <= preLogIdx {
+			DPrintf("[%d]AppendEntries[PreIndexTooLarge] len:%d <= preLogIdx:%d, backoff", rf.me, len(rf.log), preLogIdx)
+			reply.Term = rf.currentTerm
+			reply.Success = false
+			return
+		}
+		if rf.log[preLogIdx].term != preLogTerm {
+			DPrintf("[%d]AppendEntries[TermConflict] index:%d, term:%d != preLogTerm:%d, backoff", rf.me, preLogIdx, rf.log[preLogIdx].term, preLogTerm)
+			reply.Term = rf.currentTerm
+			reply.Success = false
+			return
+		}
 	}
 
 	rf.mu.Lock()
@@ -624,7 +633,7 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 				rf.mu.Lock()
 				rf.nextIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands) + 1
 				rf.matchIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands)
-				//rf.printIndex("send success:" + strconv.Itoa(peerId))
+				rf.printIndex("send success:" + strconv.Itoa(peerId))
 				rf.mu.Unlock()
 
 				successCh <- peerTerm
@@ -632,8 +641,8 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 				rf.mu.Lock()
 				// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 				// valid log index starts from 1, and should not backoff the matched index.
-				rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, rf.matchIndex[peerId]+1)
-				//rf.matchIndex[peerId] = max(rf.matchIndex[peerId]-1, 0) // match log index starts from 0
+				rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1)
+				rf.matchIndex[peerId] = max(rf.matchIndex[peerId]-1, 0) // match log index starts from 0
 				rf.currentTerm = max(rf.currentTerm, peerTerm)
 				rf.printIndex("send fail:" + strconv.Itoa(peerId))
 				rf.mu.Unlock()
@@ -669,7 +678,6 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 			//If there exists an N such that N > commitIndex, a majority
 			// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 			N := majorityIndex(rf.matchIndex)
-			DPrintf("N:%d, rf.commitIndex:%d", N, rf.commitIndex)
 			rf.commitIndex = max(N, rf.commitIndex)
 			rf.printIndex("half success")
 
@@ -746,10 +754,6 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, in
 
 	// someone get a larger Term in the same time, give up for this Term.
 	// the peer may be broadcasting to me later.
-	if arg.Term < reply.Term {
-		return false, reply.Term
-	}
-
 	return true, reply.Term
 }
 
