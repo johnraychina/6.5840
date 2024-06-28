@@ -740,7 +740,7 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, in
 	DPrintf("[%d]sendAppendEntries --> peer:%d, arg:%+v", rf.me, peer, arg)
 	ok := rf.sendAppendEntries(peer, arg, reply)
 
-	if !ok {
+	if !ok || !reply.Success {
 		return false, reply.Term
 	}
 
