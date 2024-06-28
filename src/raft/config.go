@@ -170,8 +170,8 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 				err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if err_msg != "" {
-				log.Fatalf("apply error: %v", err_msg)
 				cfg.applyErr[i] = err_msg
+				log.Fatalf("apply error1: %v", err_msg)
 				// keep reading after error so that Raft doesn't block
 				// holding locks...
 			}
@@ -257,7 +257,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			// Ignore other types of ApplyMsg.
 		}
 		if err_msg != "" {
-			log.Fatalf("apply error: %v", err_msg)
+			log.Fatalf("apply error2: %v", err_msg)
 			cfg.applyErr[i] = err_msg
 			// keep reading after error so that Raft doesn't block
 			// holding locks...
@@ -458,12 +458,15 @@ func (cfg *config) checkOneLeader() int {
 // check that everyone agrees on the term.
 func (cfg *config) checkTerms() int {
 	term := -1
+	terms := make([]int, len(cfg.rafts))
 	for i := 0; i < cfg.n; i++ {
 		if cfg.connected[i] {
 			xterm, _ := cfg.rafts[i].GetState()
+			terms[i] = xterm
 			if term == -1 {
 				term = xterm
 			} else if term != xterm {
+				DPrintf("terms: %v", terms)
 				cfg.t.Fatalf("servers disagree on term")
 			}
 		}
