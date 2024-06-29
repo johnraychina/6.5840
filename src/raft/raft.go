@@ -306,16 +306,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	myLastLogIndex := len(rf.log) - 1
 	myLastLog := rf.log[myLastLogIndex]
 
-	if args.CommitIndex > rf.commitIndex {
-		DPrintf("[%d]RequestVote[grant] candidateId:%d, CommitIndex:%d > my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
-		rf.grantVote(args)
-		reply.VoteGranted = true
-		return
-	} else if args.CommitIndex < rf.commitIndex {
-		DPrintf("[%d]RequestVote[reject] candidateId:%d, CommitIndex:%d < my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
-		reply.VoteGranted = false
-		return
-	}
+	// if args.CommitIndex > rf.commitIndex {
+	// 	DPrintf("[%d]RequestVote[grant] candidateId:%d, CommitIndex:%d > my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
+	// 	rf.grantVote(args)
+	// 	reply.VoteGranted = true
+	// 	return
+	// } else if args.CommitIndex < rf.commitIndex {
+	// 	DPrintf("[%d]RequestVote[reject] candidateId:%d, CommitIndex:%d < my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
+	// 	reply.VoteGranted = false
+	// 	return
+	// }
 
 	// I've voted for larger term, you're late!
 	if args.Term < rf.currentTerm {
@@ -509,7 +509,7 @@ func (rf *Raft) ticker() {
 
 			// hey guys, please vote for me!
 			DPrintf("[%d]Election Start, term:%d", rf.me, currentTerm)
-			granted, _ := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
+			granted, maxPeerTerm := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
 			if granted*2 <= len(rf.peers) {
 				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, currentTerm, granted)
 				continue
@@ -519,6 +519,7 @@ func (rf *Raft) ticker() {
 			// nice, over half grants!
 			// hey guys, I'm the new leader!
 			rf.mu.Lock()
+			rf.currentTerm = max(rf.currentTerm, maxPeerTerm)
 			rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
 
 			// when a new leader replaced the old one, we should init nextIndex/matchIndex
@@ -577,7 +578,7 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 			// If my Term less than peers, give up for this Term.
 			// why not vote for the peer here?
 			// peer may have sent RequestVote to me in another thread, and I've voted for him
-			if currentTerm < reply.Term || !reply.VoteGranted {
+			if !reply.VoteGranted {
 				rejectCh <- reply.Term
 				return
 			}
@@ -636,7 +637,7 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 			reply := &AppendEntriesReply{Success: false}
 
 			// retry if rpc not ok or reply fail
-			for retry := 0; !rf.killed() && retry < 100 && (!rpcOk || !reply.Success); retry++ {
+			for retry := 0; !rf.killed() && retry < 3 && (!rpcOk || !reply.Success); retry++ {
 				if _, isLeader := rf.GetState(); !isLeader {
 					break // break if I'm not a leader any more
 				}
@@ -707,14 +708,14 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 
 func (rf *Raft) backoffIndex(peerId int, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	rf.printIndex(peerId, "backoff before")
+	// rf.printIndex(peerId, "backoff before")
 
 	//TermConflict: backoff term
 	// PreIndexTooLarge: backoff index
 	//apply error1: commit index=2 server=3 871768749224567720 != server=2 2673020793732003851
 	rf.nextIndex[peerId] = min(reply.LastLogIndex, rf.matchIndex[peerId]+1)
 	rf.currentTerm = max(rf.currentTerm, reply.Term)
-	rf.printIndex(peerId, "backoff after")
+	// rf.printIndex(peerId, "backoff after")
 	rf.mu.Unlock()
 }
 
