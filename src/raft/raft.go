@@ -18,10 +18,6 @@ package raft
 //
 
 import (
-	"bytes"
-	"fmt"
-	"strconv"
-
 	//	"bytes"
 	"math/rand"
 	"slices"
@@ -165,8 +161,11 @@ type AppendEntriesArg struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Success      bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term         int  // currentTerm, for leader to update itself
+	LastLogIndex int  // backoff
+	BackOffTerm  bool // backoff term
+	BackOffIndex bool // backoff index
 }
 
 // Receiver implementation:
@@ -182,7 +181,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	//1. Reply false if Term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		//sorry, you're not leader anymore
-		DPrintf("[%d]AppendEntries[RejectOldTerm] --> [%d]: my term:%d > arg term:%d", rf.me, args.LeaderId, rf.currentTerm, args.Term)
+		DPrintf("[%d]AppendEntries[TermTooSmall] --> [%d]: my term:%d > arg term:%d", rf.me, args.LeaderId, rf.currentTerm, args.Term)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -205,13 +204,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	if preLogIdx >= 1 {
 		if len(rf.log) <= preLogIdx {
 			DPrintf("[%d]AppendEntries[PreIndexTooLarge] len:%d <= preLogIdx:%d, backoff", rf.me, len(rf.log), preLogIdx)
-			reply.Term = rf.currentTerm
+			reply.LastLogIndex = len(rf.log) - 1 // need backoff nextIndex to the peer last log index
 			reply.Success = false
 			return
 		}
 		if rf.log[preLogIdx].term != preLogTerm {
 			DPrintf("[%d]AppendEntries[TermConflict] index:%d, term:%d != preLogTerm:%d, backoff", rf.me, preLogIdx, rf.log[preLogIdx].term, preLogTerm)
-			reply.Term = rf.currentTerm
+			reply.Term = preLogTerm - 1 // need backoff nextIndex to the previous term
 			reply.Success = false
 			return
 		}
@@ -256,21 +255,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
+	reply.LastLogIndex = len(rf.log) - 1
 }
 
 func (rf *Raft) applyMsg() {
-	if rf.commitIndex > rf.lastApplied {
 
-		for k := rf.lastApplied + 1; k <= rf.commitIndex; k++ {
-			msg := ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[k].command,
-				CommandIndex: k,
-			}
-			DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
-			rf.lastApplied = k
-			rf.applyCh <- msg
+	for ; rf.commitIndex > rf.lastApplied; rf.lastApplied++ {
+		msg := ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[rf.lastApplied].command,
+			CommandIndex: rf.lastApplied,
 		}
+		DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
+		rf.applyCh <- msg
 	}
 }
 
@@ -492,7 +489,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			rf.voteForId = rf.me
 			rf.currentTerm++
-			rf.leaderId = -1
+			rf.leaderId = NoneCandidateId
 			currentTerm := rf.currentTerm
 			lastLogIndex := len(rf.log) - 1
 			lastLogTerm := 0
@@ -515,8 +512,9 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			rf.currentTerm = peerMaxTerm      // suppress peers with higher term but fewer grants.
 			rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
-			rf.initNextIndex(rf.leaderId)
-			// todo init match index
+
+			// when a new leader replaced the old one, we should init nextIndex/matchIndex
+			rf.initIndex(rf.leaderId)
 			rf.leaderId = rf.me
 			rf.mu.Unlock()
 
@@ -627,26 +625,18 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		go func() {
 			arg := rf.buildAppendArg(currentTerm, lastLogIndex, peerId)
 			// as a leader, I need to know the followers states by checking each AppendEntriesReply,
-			success, peerTerm := rf.sendPeerAppendEntries(peerId, arg)
-			if success {
+			rpcOk, reply := rf.sendPeerAppendEntries(peerId, arg)
+			if reply.Success {
 				// If successful: update nextIndex and matchIndex for follower (§5.3)
-				rf.mu.Lock()
-				rf.nextIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands) + 1
-				rf.matchIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands)
-				rf.printIndex("send success:" + strconv.Itoa(peerId))
-				rf.mu.Unlock()
-
-				successCh <- peerTerm
-			} else {
-				rf.mu.Lock()
+				rf.incrementIndex(peerId, arg)
+				successCh <- reply.Term
+			} else if rpcOk {
+				// TermTooSmall: update
+				// PreIndexTooLarge, TermConflict: backoff
 				// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 				// valid log index starts from 1, and should not backoff the matched index.
-				rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1)
-				rf.matchIndex[peerId] = max(rf.matchIndex[peerId]-1, 0) // match log index starts from 0
-				rf.currentTerm = max(rf.currentTerm, peerTerm)
-				rf.printIndex("send fail:" + strconv.Itoa(peerId))
-				rf.mu.Unlock()
-				failCh <- peerTerm
+				rf.backoffIndex(peerId, arg, reply)
+				failCh <- reply.Term
 			}
 		}()
 	}
@@ -672,24 +662,60 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		// reset my timer, suppress myself from requesting vote
 		// why not reset at the start? I may have lost leadership, I can detect that in this way.
 		if success > half {
-			rf.mu.Lock()
-			rf.currentTerm = maxPeerTerm // heartbeat done, update term
-			rf.lastHeartBeatTime = time.Now()
-			//If there exists an N such that N > commitIndex, a majority
-			// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
-			N := majorityIndex(rf.matchIndex)
-			rf.commitIndex = max(N, rf.commitIndex)
-			rf.printIndex("half success")
-
-			// leader commit apply message
-			// need lock, as Start()->append log and tick()->applyMsg run in different goroutines
-			rf.applyMsg()
-
-			rf.mu.Unlock()
+			rf.commitAndApply(maxPeerTerm)
 			break
 		}
 	}
 
+}
+
+func (rf *Raft) backoffIndex(peerId int, arg *AppendEntriesArg, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+
+	//TermConflict: backoff term
+	if reply.Term > 0 && reply.Term < arg.PreviousLogTerm {
+		n := len(rf.log) - 1
+		for i := n; i > 0; i-- {
+			if rf.log[i].term < reply.Term {
+				rf.nextIndex[peerId] = i
+				break
+			}
+		}
+	}
+	// PreIndexTooLarge: backoff index
+	if reply.LastLogIndex > 0 && reply.LastLogIndex < arg.PreviousLogIndex {
+		rf.nextIndex[peerId] = reply.LastLogIndex
+	}
+	//rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1)
+	//rf.matchIndex[peerId] = max(rf.matchIndex[peerId]-1, 0) // match log index starts from 0
+
+	rf.currentTerm = max(rf.currentTerm, reply.Term)
+	rf.printIndex(peerId, "backoff")
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) incrementIndex(peerId int, arg *AppendEntriesArg) {
+	rf.mu.Lock()
+	rf.nextIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands) + 1
+	rf.matchIndex[peerId] = arg.PreviousLogIndex + len(arg.Commands)
+	rf.printIndex(peerId, "increment")
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) commitAndApply(maxPeerTerm int) {
+	rf.mu.Lock()
+	rf.currentTerm = maxPeerTerm // heartbeat done, update term
+	rf.lastHeartBeatTime = time.Now()
+	//If there exists an N such that N > commitIndex, a majority
+	// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
+	N := majorityIndex(rf.matchIndex)
+	rf.commitIndex = max(N, rf.commitIndex)
+	rf.printIndex(rf.me, "over half half")
+
+	// leader commit apply message
+	// need lock, as Start()->append log and tick()->applyMsg run in different goroutines
+	rf.applyMsg()
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) buildAppendArg(currentTerm int, lastLogIndex int, peerId int) *AppendEntriesArg {
@@ -734,27 +760,29 @@ func (rf *Raft) grantVote(args *RequestVoteArgs) {
 	rf.mu.Lock() // guard the access to rf.log and rf.voteFor
 	defer rf.mu.Unlock()
 
-	//rf.lastHeartBeatTime = time.Now()
+	rf.lastHeartBeatTime = time.Now()
 	rf.voteForId = args.CandidateId
 	rf.currentTerm = args.Term
 	rf.leaderId = NoneCandidateId // convert to follower
 }
 
-func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, int) {
+func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, *AppendEntriesReply) {
+
+	DPrintf("[%d -> %d]sendAppendEntries: arg=%+v", rf.me, peer, arg)
 
 	reply := &AppendEntriesReply{}
+	ok := false
+	for retry := 0; retry < 3 && !ok; retry++ { // call almost 3 times
+		ok = rf.sendAppendEntries(peer, arg, reply)
+	}
 
-	// todo if over a half of the broadcast is lost, peers won't know I'm the new leader , should I start a new round vote?
-	DPrintf("[%d]sendAppendEntries --> peer:%d, arg:%+v", rf.me, peer, arg)
-	ok := rf.sendAppendEntries(peer, arg, reply)
-
-	if !ok || !reply.Success {
-		return false, reply.Term
+	if !ok {
+		//DPrintf("[%d -> %d]RpcError", rf.me, peer)
 	}
 
 	// someone get a larger Term in the same time, give up for this Term.
 	// the peer may be broadcasting to me later.
-	return true, reply.Term
+	return ok, reply
 }
 
 func (rf *Raft) delSince(preIdx int) {
@@ -769,26 +797,28 @@ func (rf *Raft) delSince(preIdx int) {
 	}
 }
 
-func (rf *Raft) initNextIndex(oldLeaderId int) {
+func (rf *Raft) initIndex(oldLeaderId int) {
 	if oldLeaderId != rf.me {
 		for i := range rf.nextIndex {
 			rf.nextIndex[i] = len(rf.log)
+		}
+		for i := range rf.matchIndex {
+			rf.matchIndex[i] = len(rf.log) - 1
 		}
 	}
 }
 
 func (rf *Raft) printLogs() {
-	var buf bytes.Buffer
-	for x := range rf.log {
-		buf.WriteString(fmt.Sprintf("%d:%v, ", rf.log[x].term, rf.log[x].command))
-
-	}
-	DPrintf("[%d]rf.log=[%s] commitIndex:%d, lastApplied:%d", rf.me, buf.String(), rf.commitIndex, rf.lastApplied)
+	//var buf bytes.Buffer
+	//for x := range rf.log {
+	//	buf.WriteString(fmt.Sprintf("%d:%v, ", rf.log[x].term, rf.log[x].command))
+	//
+	//}
+	//DPrintf("[%d]rf.log=[%s] commitIndex:%d, lastApplied:%d", rf.me, buf.String(), rf.commitIndex, rf.lastApplied)
 }
 
-func (rf *Raft) printIndex(info string) {
-	DPrintf("[%d] %s commitIndex:%d, matchIndex:%v, nextIndex:%v, lastApplied:%d", rf.me, info, rf.commitIndex, rf.matchIndex, rf.nextIndex, rf.lastApplied)
-
+func (rf *Raft) printIndex(peer int, info string) {
+	DPrintf("[%d -> %d] %s commitIndex:%d, lastApplied:%d, matchIndex:%v, nextIndex:%v", rf.me, peer, info, rf.commitIndex, rf.lastApplied, rf.matchIndex, rf.nextIndex)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -815,7 +845,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log[0] = &LogEntry{term: 0} // placeholder, just in case nil pointer
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
-	// todo when a new leader replaced the old one, we should init nextIndex/matchIndex
 	for i := range rf.nextIndex {
 		rf.nextIndex[i] = 1
 	}
@@ -823,7 +852,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.matchIndex[i] = 0
 	}
 	rf.commitIndex = 0
-	rf.lastApplied = 0 //todo
+	rf.lastApplied = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
