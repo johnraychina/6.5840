@@ -164,8 +164,6 @@ type AppendEntriesReply struct {
 	Success      bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 	Term         int  // currentTerm, for leader to update itself
 	LastLogIndex int  // backoff
-	BackOffTerm  bool // backoff term
-	BackOffIndex bool // backoff index
 }
 
 // Receiver implementation:
@@ -193,6 +191,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	rf.currentTerm = args.Term
 	rf.lastHeartBeatTime = time.Now()
 	rf.leaderId = args.LeaderId
+	//rf.voteForId = args.LeaderId
 
 	preLogIdx := args.PreviousLogIndex
 	preLogTerm := args.PreviousLogTerm
@@ -210,7 +209,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 		}
 		if rf.log[preLogIdx].term != preLogTerm {
 			DPrintf("[%d]AppendEntries[TermConflict] index:%d, term:%d != preLogTerm:%d, backoff", rf.me, preLogIdx, rf.log[preLogIdx].term, preLogTerm)
-			reply.Term = preLogTerm - 1 // need backoff nextIndex to the previous term
+			reply.LastLogIndex = preLogIdx // need backoff nextIndex to the previous term
 			reply.Success = false
 			return
 		}
@@ -260,7 +259,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 
 func (rf *Raft) applyMsg() {
 
-	for ; rf.commitIndex > rf.lastApplied; rf.lastApplied++ {
+	for rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
 		msg := ApplyMsg{
 			CommandValid: true,
 			Command:      rf.log[rf.lastApplied].command,
@@ -278,8 +278,8 @@ type RequestVoteArgs struct {
 
 	Term         int // candidate's Term
 	CandidateId  int // candidate requesting vote
-	LastLogIndex int // index of candidate's last log entry
-	LastLogTerm  int //Term of candidate's last log entry
+	LastLogIndex int // index of candidate's last log entry (I think it's largest committed one, a candidate with the longest log doesn't necessary be the largest committed)
+	LastLogTerm  int //Term of candidate's last log entry (I think it's last committed one)
 }
 
 // example RequestVote RPC reply structure.
@@ -301,6 +301,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// default reply
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
+
+	// candidate with the largest applied index should be the leader
+	if args.LastLogIndex < rf.lastApplied {
+		DPrintf("[%d]RequestVote[reject] candidateId:%d, LastLogIndex:%d < lastApplied:%d", rf.me, args.CandidateId, args.LastLogIndex, rf.lastApplied)
+		reply.VoteGranted = false
+	}
 
 	// -------------------- compare term first -------------------- //
 	// I've voted for larger term, you're late!
@@ -502,10 +508,12 @@ func (rf *Raft) ticker() {
 			DPrintf("[%d]Election Start, term:%d", rf.me, currentTerm)
 			granted, peerMaxTerm := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
 			if granted*2 <= len(rf.peers) {
+				//rf.currentTerm-- // rollback term
+				//rf.currentTerm = max(rf.currentTerm, peerMaxTerm)
 				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, currentTerm, granted)
 				continue
 			}
-			DPrintf("[%d]Election Win, term:%d, granted:%d", rf.me, currentTerm, granted)
+			DPrintf("[%d]Election Win, term:%d, granted:%d,", rf.me, currentTerm, granted)
 
 			// nice, over half grants!
 			// hey guys, I'm the new leader!
@@ -515,6 +523,7 @@ func (rf *Raft) ticker() {
 
 			// when a new leader replaced the old one, we should init nextIndex/matchIndex
 			rf.initIndex(rf.leaderId)
+			rf.printLogs()
 			rf.leaderId = rf.me
 			rf.mu.Unlock()
 
@@ -623,19 +632,31 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		// to avoid for + go routine concurrent problems, don't share inner variables.
 		peerId := i
 		go func() {
-			arg := rf.buildAppendArg(currentTerm, lastLogIndex, peerId)
-			// as a leader, I need to know the followers states by checking each AppendEntriesReply,
-			rpcOk, reply := rf.sendPeerAppendEntries(peerId, arg)
-			if reply.Success {
-				// If successful: update nextIndex and matchIndex for follower (§5.3)
-				rf.incrementIndex(peerId, arg)
-				successCh <- reply.Term
-			} else if rpcOk {
-				// TermTooSmall: update
-				// PreIndexTooLarge, TermConflict: backoff
-				// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-				// valid log index starts from 1, and should not backoff the matched index.
-				rf.backoffIndex(peerId, arg, reply)
+			rpcOk := false
+			reply := &AppendEntriesReply{Success: false}
+
+			// retry if rpc not ok or reply fail
+			for retry := 0; !rf.killed() && retry < 100 && (!rpcOk || !reply.Success); retry++ {
+				arg := rf.buildAppendArg(currentTerm, lastLogIndex, peerId)
+				rpcOk, reply = rf.sendPeerAppendEntries(peerId, arg)
+				if rpcOk {
+					if reply.Success {
+						// If successful: update nextIndex and matchIndex for follower (§5.3)
+						rf.incrementIndex(peerId, arg)
+						successCh <- reply.Term
+						return
+					} else { // rpc ok, but reply returns failure
+						// TermTooSmall: update
+						// PreIndexTooLarge, TermConflict: backoff
+						// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+						// valid log index starts from 1, and should not backoff the matched index.
+						rf.backoffIndex(peerId, reply)
+					}
+				}
+			}
+
+			// still fail
+			if rpcOk && !reply.Success {
 				failCh <- reply.Term
 			}
 		}()
@@ -669,28 +690,16 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 
 }
 
-func (rf *Raft) backoffIndex(peerId int, arg *AppendEntriesArg, reply *AppendEntriesReply) {
+func (rf *Raft) backoffIndex(peerId int, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	rf.printIndex(peerId, "backoff before")
 
 	//TermConflict: backoff term
-	if reply.Term > 0 && reply.Term < arg.PreviousLogTerm {
-		n := len(rf.log) - 1
-		for i := n; i > 0; i-- {
-			if rf.log[i].term < reply.Term {
-				rf.nextIndex[peerId] = i
-				break
-			}
-		}
-	}
 	// PreIndexTooLarge: backoff index
-	if reply.LastLogIndex > 0 && reply.LastLogIndex < arg.PreviousLogIndex {
-		rf.nextIndex[peerId] = reply.LastLogIndex
-	}
-	//rf.nextIndex[peerId] = max(rf.nextIndex[peerId]-1, 1)
-	//rf.matchIndex[peerId] = max(rf.matchIndex[peerId]-1, 0) // match log index starts from 0
-
+	//apply error1: commit index=2 server=3 871768749224567720 != server=2 2673020793732003851
+	rf.nextIndex[peerId] = min(reply.LastLogIndex, rf.matchIndex[peerId]+1)
 	rf.currentTerm = max(rf.currentTerm, reply.Term)
-	rf.printIndex(peerId, "backoff")
+	rf.printIndex(peerId, "backoff after")
 	rf.mu.Unlock()
 }
 
@@ -771,13 +780,10 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, *A
 	DPrintf("[%d -> %d]sendAppendEntries: arg=%+v", rf.me, peer, arg)
 
 	reply := &AppendEntriesReply{}
-	ok := false
-	for retry := 0; retry < 3 && !ok; retry++ { // call almost 3 times
-		ok = rf.sendAppendEntries(peer, arg, reply)
-	}
+	ok := rf.sendAppendEntries(peer, arg, reply)
 
 	if !ok {
-		//DPrintf("[%d -> %d]RpcError", rf.me, peer)
+		DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
 	}
 
 	// someone get a larger Term in the same time, give up for this Term.
@@ -803,7 +809,7 @@ func (rf *Raft) initIndex(oldLeaderId int) {
 			rf.nextIndex[i] = len(rf.log)
 		}
 		for i := range rf.matchIndex {
-			rf.matchIndex[i] = len(rf.log) - 1
+			rf.matchIndex[i] = 0
 		}
 	}
 }

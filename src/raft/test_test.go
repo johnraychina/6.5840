@@ -516,32 +516,43 @@ func TestBackup3B(t *testing.T) {
 
 	cfg.begin("Test (3B): leader backs up quickly over incorrect follower logs")
 
-	cfg.one(rand.Int(), servers, true)
+	cfg.one(rand.Int(), servers, true) // commit index = 1
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect((leader1 + 2) % servers)
+	DPrintf("[%d]disconnect----------------------------------------", (leader1+2)%servers)
 	cfg.disconnect((leader1 + 3) % servers)
+	DPrintf("[%d]disconnect----------------------------------------", (leader1+3)%servers)
 	cfg.disconnect((leader1 + 4) % servers)
+	DPrintf("[%d]disconnect----------------------------------------", (leader1+4)%servers)
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader1].Start(rand.Int())
+		cfg.rafts[leader1].Start(rand.Int()) // leader1: log 1->51,commit  1
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
 
 	cfg.disconnect((leader1 + 0) % servers)
+	DPrintf("[%d]disconnect----------------------------------------", (leader1+0)%servers)
+
 	cfg.disconnect((leader1 + 1) % servers)
+	DPrintf("[%d]disconnect----------------------------------------", (leader1+1)%servers)
 
 	// allow other partition to recover
 	cfg.connect((leader1 + 2) % servers)
+	DPrintf("[%d]reconnect----------------------------------------", (leader1+2)%servers)
+
 	cfg.connect((leader1 + 3) % servers)
+	DPrintf("[%d]reconnect----------------------------------------", (leader1+3)%servers)
+
 	cfg.connect((leader1 + 4) % servers)
+	DPrintf("[%d]reconnect----------------------------------------", (leader1+4)%servers)
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3, true)
+		cfg.one(rand.Int(), 3, true) // leader2: log 1->51, commit 1 -> 51
 	}
 
 	// now another partitioned leader and one follower
@@ -551,10 +562,11 @@ func TestBackup3B(t *testing.T) {
 		other = (leader2 + 1) % servers
 	}
 	cfg.disconnect(other)
+	DPrintf("[%d]disconnect----------------------------------------", other)
 
 	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader2].Start(rand.Int())
+		cfg.rafts[leader2].Start(rand.Int()) // leader2: log 51->101 commit 51
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -563,20 +575,35 @@ func TestBackup3B(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
-	cfg.connect((leader1 + 0) % servers)
+
+	Debug = true
+	cfg.connect((leader1 + 0) % servers) // log overwrite: leader1 group <--> leader2 group
+	DPrintf("[%d]reconnect----------------------------------------", (leader1+0)%servers)
 	cfg.connect((leader1 + 1) % servers)
+	DPrintf("[%d]reconnect----------------------------------------", (leader1+1)%servers)
 	cfg.connect(other)
+	DPrintf("[%d]reconnect----------------------------------------", other)
+
+	DPrintf("----------------------------------------bring original leader back to life----------------------------------------")
+
+	time.Sleep(RaftElectionTimeout) // todo 这里有问题，成为leader后，没及时同步？
+	newLeader := cfg.checkOneLeader()
+	DPrintf("newLeader is :%d", newLeader) // newLeader should be the largest commit index
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3, true)
+		cfg.one(rand.Int(), 3, true) // leader2:
 	}
 
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
+		DPrintf("[%d]reconnect----------------------------------------", i)
 	}
+
 	cfg.one(rand.Int(), servers, true)
+
+	time.Sleep(RaftElectionTimeout)
 
 	cfg.end()
 }

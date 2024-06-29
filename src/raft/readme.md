@@ -40,5 +40,9 @@ time go test -run TestFailAgree3B
 ```
 
 ```shell
+time go test -run TestBackup3B
+```
+
+```shell
 time go test -run 3B
 ```

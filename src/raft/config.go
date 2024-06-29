@@ -8,7 +8,9 @@ package raft
 // test with the original before submitting.
 //
 
-import "6.5840/labgob"
+import (
+	"6.5840/labgob"
+)
 import "6.5840/labrpc"
 import "bytes"
 import "log"
@@ -602,6 +604,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	}
 	if cfg.checkFinished() == false {
 		cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
+		//panic(errors.New("failed to reach agreement"))
 	}
 	return -1
 }
