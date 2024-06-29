@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -575,9 +577,9 @@ func TestBackup3B(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
+	// Debug = true
 
-	Debug = true
-	cfg.connect((leader1 + 0) % servers) // log overwrite: leader1 group <--> leader2 group
+	cfg.connect((leader1 + 0) % servers)
 	DPrintf("[%d]reconnect----------------------------------------", (leader1+0)%servers)
 	cfg.connect((leader1 + 1) % servers)
 	DPrintf("[%d]reconnect----------------------------------------", (leader1+1)%servers)
@@ -585,14 +587,14 @@ func TestBackup3B(t *testing.T) {
 	DPrintf("[%d]reconnect----------------------------------------", other)
 
 	DPrintf("----------------------------------------bring original leader back to life----------------------------------------")
+	DPrintf("----------------------------------------leader1:%d, leader2:%d, other:%d----------------------------------------", leader1, leader2, other)
 
-	time.Sleep(RaftElectionTimeout) // todo 这里有问题，成为leader后，没及时同步？
 	newLeader := cfg.checkOneLeader()
-	DPrintf("newLeader is :%d", newLeader) // newLeader should be the largest commit index
+	DPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3, true) // leader2:
+		cfg.one(rand.Int(), 3, true)
 	}
 
 	// now everyone

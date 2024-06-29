@@ -280,6 +280,7 @@ type RequestVoteArgs struct {
 	CandidateId  int // candidate requesting vote
 	LastLogIndex int // index of candidate's last log entry (I think it's largest committed one, a candidate with the longest log doesn't necessary be the largest committed)
 	LastLogTerm  int //Term of candidate's last log entry (I think it's last committed one)
+	CommitIndex  int
 }
 
 // example RequestVote RPC reply structure.
@@ -302,21 +303,30 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
-	// candidate with the largest applied index should be the leader
-	if args.LastLogIndex < rf.lastApplied {
-		DPrintf("[%d]RequestVote[reject] candidateId:%d, LastLogIndex:%d < lastApplied:%d", rf.me, args.CandidateId, args.LastLogIndex, rf.lastApplied)
-		reply.VoteGranted = false
-	}
+	myLastLogIndex := len(rf.log) - 1
+	myLastLog := rf.log[myLastLogIndex]
 
-	// -------------------- compare term first -------------------- //
-	// I've voted for larger term, you're late!
-	if args.Term < rf.currentTerm {
-		DPrintf("[%d]RequestVote[reject] candidateId:%d, term:%d < currentTerm:%d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+	if args.CommitIndex > rf.commitIndex {
+		DPrintf("[%d]RequestVote[grant] candidateId:%d, CommitIndex:%d > my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
+		rf.grantVote(args)
+		reply.VoteGranted = true
+		return
+	} else if args.CommitIndex < rf.commitIndex {
+		DPrintf("[%d]RequestVote[reject] candidateId:%d, CommitIndex:%d < my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
+		reply.VoteGranted = false
 		return
 	}
 
+	// I've voted for larger term, you're late!
+	if args.Term < rf.currentTerm {
+		DPrintf("[%d]RequestVote[reject] candidateId:%d, term:%d < currentTerm:%d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+		reply.VoteGranted = false
+		return
+	}
+
+	// vote for new term
+	// Note: but the same rule does not apply to AppendEntries
 	if args.Term > rf.currentTerm {
-		//DPrintf("RequestVote[grant] candidateId:%d, term:%d > me:%d, currentTerm:%d", args.CandidateId, args.Term, rf.me, rf.currentTerm)
 		rf.grantVote(args)
 		reply.VoteGranted = true
 		return
@@ -334,31 +344,27 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			return
 		}
 
-		myLastLogIndex := len(rf.log) - 1
-		myLastLog := rf.log[myLastLogIndex]
 		if args.LastLogTerm > myLastLog.term {
-			//DPrintf("RequestVote[grant] candidateId:%d, lastLogTerm:%d > me:%d, myLastLogTerm:%d",
-			//	args.CandidateId, args.LastLogTerm, rf.me, myLastLog.term)
+			DPrintf("RequestVote[grant] candidateId:%d, lastLogTerm:%d > me:%d, myLastLogTerm:%d",
+				args.CandidateId, args.LastLogTerm, rf.me, myLastLog.term)
 			rf.grantVote(args)
 			reply.VoteGranted = true
 			return
 		}
 
 		//reject vote: arg.Term >= currentTerm and arg.LastLogTerm < myLastLogTerm
+		// bad case: lower term leader keep syncing, while split old leader keep requesting vote by incrementing its term
 		if args.LastLogTerm < myLastLog.term {
-			panic("illegal states")
+			reply.VoteGranted = false
+			return
 		}
 
 		// last log term equal
 
 		// candidate's log index equal or larger than me
 		if args.LastLogIndex >= myLastLogIndex {
-			// impossible: multiple leader in one term
-			if rf.voteForId != args.CandidateId {
-				panic("illegal states")
-			}
-			//DPrintf("RequestVote[grant] candidateId:%d, LastLogIndex:%d >= me:%d, myLastLogIndex:%d",
-			//	args.CandidateId, args.LastLogIndex, rf.me, myLastLogIndex)
+			DPrintf("RequestVote[grant] candidateId:%d, LastLogIndex:%d >= me:%d, myLastLogIndex:%d",
+				args.CandidateId, args.LastLogIndex, rf.me, myLastLogIndex)
 			rf.grantVote(args)
 			reply.VoteGranted = true
 			return
@@ -444,7 +450,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Unlock()
 
 	go func() {
-		rf.broadCastAppendEntries(term, lastLogIndex)
+		rf.broadCastAppendEntries(rf.log[lastLogIndex].term, lastLogIndex)
 	}()
 
 	return lastLogIndex, term, isLeader
@@ -497,19 +503,14 @@ func (rf *Raft) ticker() {
 			rf.currentTerm++
 			rf.leaderId = NoneCandidateId
 			currentTerm := rf.currentTerm
-			lastLogIndex := len(rf.log) - 1
-			lastLogTerm := 0
-			if lastLogIndex >= 1 { // valid log index [1,...)
-				lastLogTerm = rf.log[lastLogIndex].term
-			}
+			lastLogIndex := len(rf.log) - 1 // rf.log[0] place holder, term=0
+			lastLogTerm := rf.log[lastLogIndex].term
 			rf.mu.Unlock()
 
 			// hey guys, please vote for me!
 			DPrintf("[%d]Election Start, term:%d", rf.me, currentTerm)
-			granted, peerMaxTerm := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
+			granted, _ := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
 			if granted*2 <= len(rf.peers) {
-				//rf.currentTerm-- // rollback term
-				//rf.currentTerm = max(rf.currentTerm, peerMaxTerm)
 				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, currentTerm, granted)
 				continue
 			}
@@ -518,7 +519,6 @@ func (rf *Raft) ticker() {
 			// nice, over half grants!
 			// hey guys, I'm the new leader!
 			rf.mu.Lock()
-			rf.currentTerm = peerMaxTerm      // suppress peers with higher term but fewer grants.
 			rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
 
 			// when a new leader replaced the old one, we should init nextIndex/matchIndex
@@ -563,11 +563,11 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 			CandidateId:  rf.me,
 			LastLogIndex: lastLogIndex,
 			LastLogTerm:  lastLogTerm,
+			CommitIndex:  rf.lastApplied,
 		}
 		reply := &RequestVoteReply{}
 
 		peer := i
-		// 由于这里rpc可能阻塞3s超时，导致竞选没及时发出去，必须用 go routine来避免这种问题
 		go func() {
 			ok := rf.sendRequestVote(peer, args, reply)
 			if !ok {
@@ -637,6 +637,10 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 
 			// retry if rpc not ok or reply fail
 			for retry := 0; !rf.killed() && retry < 100 && (!rpcOk || !reply.Success); retry++ {
+				if _, isLeader := rf.GetState(); !isLeader {
+					break // break if I'm not a leader any more
+				}
+
 				arg := rf.buildAppendArg(currentTerm, lastLogIndex, peerId)
 				rpcOk, reply = rf.sendPeerAppendEntries(peerId, arg)
 				if rpcOk {
@@ -683,7 +687,18 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		// reset my timer, suppress myself from requesting vote
 		// why not reset at the start? I may have lost leadership, I can detect that in this way.
 		if success > half {
-			rf.commitAndApply(maxPeerTerm)
+			// todo send heartbeat immediately
+			go func() {
+				rf.commitAndApply(maxPeerTerm)
+				for peerId := range rf.peers {
+					if peerId == rf.me {
+						continue
+					}
+					arg := rf.buildAppendArg(currentTerm, lastLogIndex, peerId)
+					rf.sendPeerAppendEntries(peerId, arg)
+				}
+			}()
+
 			break
 		}
 	}
@@ -713,13 +728,13 @@ func (rf *Raft) incrementIndex(peerId int, arg *AppendEntriesArg) {
 
 func (rf *Raft) commitAndApply(maxPeerTerm int) {
 	rf.mu.Lock()
-	rf.currentTerm = maxPeerTerm // heartbeat done, update term
+	rf.currentTerm = max(maxPeerTerm, rf.currentTerm) // heartbeat done, update term
 	rf.lastHeartBeatTime = time.Now()
 	//If there exists an N such that N > commitIndex, a majority
 	// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 	N := majorityIndex(rf.matchIndex)
 	rf.commitIndex = max(N, rf.commitIndex)
-	rf.printIndex(rf.me, "over half half")
+	rf.printIndex(rf.me, "over a half")
 
 	// leader commit apply message
 	// need lock, as Start()->append log and tick()->applyMsg run in different goroutines
@@ -777,13 +792,13 @@ func (rf *Raft) grantVote(args *RequestVoteArgs) {
 
 func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, *AppendEntriesReply) {
 
-	DPrintf("[%d -> %d]sendAppendEntries: arg=%+v", rf.me, peer, arg)
+	// DPrintf("[%d -> %d]sendAppendEntries: arg=%+v", rf.me, peer, arg)
 
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(peer, arg, reply)
 
 	if !ok {
-		DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
+		// DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
 	}
 
 	// someone get a larger Term in the same time, give up for this Term.
