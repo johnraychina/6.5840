@@ -166,6 +166,10 @@ type AppendEntriesReply struct {
 	LastLogIndex int  // backoff
 }
 
+//All Servers:
+//If RPC request or response contains term T > currentTerm: set currentTerm = T,
+// convert to follower (§5.1)
+
 // Receiver implementation:
 // 1. Reply false if Term < currentTerm (§5.1)
 // 2. Reply false if log doesn’t contain an entry at prevLogIndex whose Term matches prevLogTerm (§5.3)
@@ -176,6 +180,10 @@ type AppendEntriesReply struct {
 // min(leaderCommit, index of last new entry)
 func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply) {
 
+	reply.Success = true
+	reply.Term = rf.currentTerm
+	reply.LastLogIndex = len(rf.log) - 1
+
 	//1. Reply false if Term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		//sorry, you're not leader anymore
@@ -185,13 +193,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 		return
 	}
 
-	//All Servers:
-	//If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-	// accept AppendEntries, suppress my election intention
-	rf.currentTerm = args.Term
-	rf.lastHeartBeatTime = time.Now()
-	rf.leaderId = args.LeaderId
-	//rf.voteForId = args.LeaderId
+	// if one server’s current term is smaller than the other’s, then it updates its current term to the larger value
+	// If a candidate or leader discovers that its term is out of date, it immediately reverts to follower state.
+	if args.Term > rf.currentTerm {
+		if _, isLeader := rf.GetState(); isLeader {
+			rf.leaderId = args.LeaderId
+			rf.voteForId = args.LeaderId
+		}
+	}
 
 	preLogIdx := args.PreviousLogIndex
 	preLogTerm := args.PreviousLogTerm
@@ -216,6 +225,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	}
 
 	rf.mu.Lock()
+	// accept AppendEntries, suppress my election intention
+	rf.lastHeartBeatTime = time.Now()
+	rf.currentTerm = args.Term
+	rf.leaderId = args.LeaderId
+	//rf.voteForId = args.LeaderId
+
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (§5.3)
 	if preLogIdx >= 1 && len(rf.log) > preLogIdx+1 && rf.log[preLogIdx].term != preLogTerm {
@@ -251,10 +266,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 		rf.applyMsg()
 	}
 	rf.mu.Unlock()
-
-	reply.Success = true
-	reply.Term = rf.currentTerm
-	reply.LastLogIndex = len(rf.log) - 1
 }
 
 func (rf *Raft) applyMsg() {
@@ -306,27 +317,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	myLastLogIndex := len(rf.log) - 1
 	myLastLog := rf.log[myLastLogIndex]
 
-	// if args.CommitIndex > rf.commitIndex {
-	// 	DPrintf("[%d]RequestVote[grant] candidateId:%d, CommitIndex:%d > my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
-	// 	rf.grantVote(args)
-	// 	reply.VoteGranted = true
-	// 	return
-	// } else if args.CommitIndex < rf.commitIndex {
-	// 	DPrintf("[%d]RequestVote[reject] candidateId:%d, CommitIndex:%d < my CommitIndex:%d", rf.me, args.CandidateId, args.CommitIndex, rf.commitIndex)
-	// 	reply.VoteGranted = false
-	// 	return
-	// }
-
-	// I've voted for larger term, you're late!
+	// I've voted for larger term, you're late! but you can request vote for the next term
 	if args.Term < rf.currentTerm {
 		DPrintf("[%d]RequestVote[reject] candidateId:%d, term:%d < currentTerm:%d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
 		reply.VoteGranted = false
 		return
 	}
 
-	// vote for new term
-	// Note: but the same rule does not apply to AppendEntries
-	if args.Term > rf.currentTerm {
+	if args.CommitIndex >= rf.commitIndex {
 		rf.grantVote(args)
 		reply.VoteGranted = true
 		return
@@ -379,6 +377,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// I won't vote two candidates in the same term.
 	DPrintf("[%d]RequestVote[reject] term:%d, voteForId:%d != candidateId:%d", rf.me, rf.currentTerm, rf.voteForId, args.CandidateId)
+
 	return
 }
 
@@ -499,9 +498,9 @@ func (rf *Raft) ticker() {
 
 			// vote for myself
 			rf.mu.Lock()
+			rf.leaderId = NoneCandidateId
 			rf.voteForId = rf.me
 			rf.currentTerm++
-			rf.leaderId = NoneCandidateId
 			currentTerm := rf.currentTerm
 			lastLogIndex := len(rf.log) - 1 // rf.log[0] place holder, term=0
 			lastLogTerm := rf.log[lastLogIndex].term
@@ -509,7 +508,7 @@ func (rf *Raft) ticker() {
 
 			// hey guys, please vote for me!
 			DPrintf("[%d]Election Start, term:%d", rf.me, currentTerm)
-			granted, maxPeerTerm := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
+			granted, _ := rf.broadcastVote(currentTerm, lastLogIndex, lastLogTerm)
 			if granted*2 <= len(rf.peers) {
 				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, currentTerm, granted)
 				continue
@@ -519,13 +518,11 @@ func (rf *Raft) ticker() {
 			// nice, over half grants!
 			// hey guys, I'm the new leader!
 			rf.mu.Lock()
-			rf.currentTerm = max(rf.currentTerm, maxPeerTerm)
+			rf.leaderId = rf.me
 			rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
-
 			// when a new leader replaced the old one, we should init nextIndex/matchIndex
 			rf.initIndex(rf.leaderId)
 			rf.printLogs()
-			rf.leaderId = rf.me
 			rf.mu.Unlock()
 
 			go func() {
@@ -579,11 +576,12 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 			// why not vote for the peer here?
 			// peer may have sent RequestVote to me in another thread, and I've voted for him
 			if !reply.VoteGranted {
+				rf.currentTerm = max(rf.currentTerm, reply.Term)
 				rejectCh <- reply.Term
 				return
 			}
 
-			grantCh <- peer
+			grantCh <- reply.Term
 			return
 		}()
 	}
@@ -649,7 +647,7 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 						// If successful: update nextIndex and matchIndex for follower (§5.3)
 						rf.incrementIndex(peerId, arg)
 						successCh <- reply.Term
-						return
+						break
 					} else { // rpc ok, but reply returns failure
 						// TermTooSmall: update
 						// PreIndexTooLarge, TermConflict: backoff
