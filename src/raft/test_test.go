@@ -589,8 +589,8 @@ func TestBackup3B(t *testing.T) {
 	DPrintf("----------------------------------------bring original leader back to life----------------------------------------")
 	DPrintf("----------------------------------------leader1:%d, leader2:%d, other:%d----------------------------------------", leader1, leader2, other)
 
-	newLeader := cfg.checkOneLeader()
-	DPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
+	// newLeader := cfg.checkOneLeader()
+	// DPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {

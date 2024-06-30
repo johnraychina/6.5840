@@ -487,7 +487,7 @@ func (rf *Raft) ticker() {
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		if !skipSleep {
-			ms := 50 + (rand.Int63() % 100)
+			ms := 50 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 		skipSleep = false
@@ -507,14 +507,14 @@ func (rf *Raft) ticker() {
 			// hey guys, please vote for me!
 			DPrintf("[%d]Election Start, term:%d", rf.me, voteTerm)
 			granted := rf.broadcastVote(voteTerm, lastLogIndex, lastLogTerm)
-			if granted*2 <= len(rf.peers) {
-				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, voteTerm, granted)
-				continue
-			}
 			if rf.currentTerm != voteTerm {
 				// term changed
 				DPrintf("[%d]Election TermChanged, term:%d, currentTerm:%d", rf.me, voteTerm, rf.currentTerm)
-				// skipSleep = true // request next term vote aggressively(without sleeping)
+				skipSleep = true // request next term vote aggressively(without sleeping)
+				continue
+			}
+			if granted*2 <= len(rf.peers) {
+				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, voteTerm, granted)
 				continue
 			}
 			DPrintf("[%d]Election Win, term:%d, currentTerm:%d,", rf.me, voteTerm, rf.currentTerm)
