@@ -792,36 +792,47 @@ func TestPersist23C(t *testing.T) {
 
 	index := 1
 	for iters := 0; iters < 5; iters++ {
-		cfg.one(10+index, servers, true)
+		cfg.one(10+index, servers, true) // 11, all servers
+		DTestPrintf("iters:%d, step1, append(%d)", iters, 10+index)
 		index++
 
 		leader1 := cfg.checkOneLeader()
 
 		cfg.disconnect((leader1 + 1) % servers)
 		cfg.disconnect((leader1 + 2) % servers)
+		DTestPrintf("iters:%d, step2, leader:%d, disconnected:[%d, %d]", iters, leader1, (leader1+1)%servers, (leader1+2)%servers)
 
 		cfg.one(10+index, servers-2, true)
+		DTestPrintf("iters:%d, step3, append(%d) live:[%d %d %d]", iters, 10+index, (leader1+0)%servers, (leader1+3)%servers, (leader1+4)%servers) //half server:leader1 + 0/3/4
 		index++
 
 		cfg.disconnect((leader1 + 0) % servers)
 		cfg.disconnect((leader1 + 3) % servers)
 		cfg.disconnect((leader1 + 4) % servers)
+		DTestPrintf("iters:%d, step4, disconnected:[%d, %d, %d], all disconnected", iters, (leader1+0)%servers, (leader1+3)%servers, (leader1+4)%servers)
 
 		cfg.start1((leader1+1)%servers, cfg.applier)
 		cfg.start1((leader1+2)%servers, cfg.applier)
 		cfg.connect((leader1 + 1) % servers)
 		cfg.connect((leader1 + 2) % servers)
+		// live servers: leader1+1/2
+		DTestPrintf("iters:%d, step5, restarted:[%d, %d], less than a half", iters, (leader1+1)%servers, (leader1+2)%servers)
 
 		time.Sleep(RaftElectionTimeout)
 
 		cfg.start1((leader1+3)%servers, cfg.applier)
 		cfg.connect((leader1 + 3) % servers)
+		// live servers: leader1+1/2/3
+		DTestPrintf("iters:%d, step6, restarted:%d, live:[%d, %d, %d]", iters, (leader1+3)%servers, (leader1+1)%servers, (leader1+2)%servers, (leader1+3)%servers)
 
-		cfg.one(10+index, servers-2, true)
+		cfg.one(10+index, servers-2, true) //13
+		DTestPrintf("iters:%d, step7, append(%d) live:[%d, %d, %d]", iters, 10+index, (leader1+1)%servers, (leader1+2)%servers, (leader1+3)%servers)
 		index++
 
 		cfg.connect((leader1 + 4) % servers)
 		cfg.connect((leader1 + 0) % servers)
+		// all alive
+		DTestPrintf("iters:%d, step6, reconnected:[%d, %d], live:[all]", iters, (leader1+4)%servers, leader1)
 	}
 
 	cfg.one(1000, servers, true)

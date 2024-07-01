@@ -121,7 +121,9 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	err := e.Encode(rf.currentTerm)
 	checkErr(err)
-	err = e.Encode(rf.voteForId)
+	err = e.Encode(rf.commitIndex)
+	checkErr(err)
+	err = e.Encode(rf.lastApplied)
 	checkErr(err)
 	err = e.Encode(rf.log)
 	checkErr(err)
@@ -146,14 +148,18 @@ func (rf *Raft) readPersist(data []byte) {
 	buf := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(buf)
 
+	// see persist()
 	err := d.Decode(&rf.currentTerm)
 	checkErr(err)
-	err = d.Decode(&rf.voteForId)
+	err = d.Decode(&rf.commitIndex)
 	checkErr(err)
+	err = d.Decode(&rf.lastApplied)
+	checkErr(err)
+	rf.voteForId = NoneCandidateId
 	err = d.Decode(&rf.log)
 	checkErr(err)
 
-	DPrintf("readPersist currentTerm:%d, voteForId:%d, log:%+v", rf.currentTerm, rf.voteForId, rf.log)
+	DPrintf("[%d]readPersist currentTerm:%d, voteForId:%d, log:%+v", rf.me, rf.currentTerm, rf.voteForId, rf.log)
 }
 
 // the service says it has created a snapshot that has
@@ -284,9 +290,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 }
 
 func (rf *Raft) applyMsg() {
-
-	rf.persist() // committed logs should be persistent
-
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
 		msg := ApplyMsg{
@@ -297,6 +300,7 @@ func (rf *Raft) applyMsg() {
 		DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
 		rf.applyCh <- msg
 	}
+	rf.persist() // committed logs should be persistent
 }
 
 // example RequestVote RPC arguments structure.
@@ -533,7 +537,8 @@ func (rf *Raft) ticker() {
 				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, voteTerm, granted)
 				continue
 			}
-			DPrintf("[%d]Election Win, term:%d, currentTerm:%d,", rf.me, voteTerm, rf.currentTerm)
+			DPrintf("[%d]Election Win, term:%d, currentTerm:%d", rf.me, voteTerm, rf.currentTerm)
+			rf.printLogs()
 
 			// nice, over half grants!
 			// hey guys, I'm the new leader!
