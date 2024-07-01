@@ -738,30 +738,47 @@ func TestPersist13C(t *testing.T) {
 		cfg.connect(i)
 	}
 
+	DPrintf("--------------all servers crash and re-started--------------")
 	cfg.one(12, servers, true)
+	DPrintf("--------------append(12)--------------")
 
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
 	cfg.start1(leader1, cfg.applier)
 	cfg.connect(leader1)
 
+	DPrintf("--------------leader1:%d restart--------------", leader1)
 	cfg.one(13, servers, true)
+	DPrintf("--------------append(13)--------------")
 
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	DPrintf("--------------leader2:%d disconnected--------------", leader2)
+
 	cfg.one(14, servers-1, true)
+	DPrintf("--------------append(14)--------------")
+
 	cfg.start1(leader2, cfg.applier)
 	cfg.connect(leader2)
+	DPrintf("--------------leader2:%d restarted--------------", leader2)
 
+	DPrintf("--------------start wait index:4 to be committed--------------")
 	cfg.wait(4, servers, -1) // wait for leader2 to join before killing i3
+	DPrintf("--------------end wait index:4 to be committed--------------")
 
 	i3 := (cfg.checkOneLeader() + 1) % servers
 	cfg.disconnect(i3)
+	DPrintf("--------------i3:%d, disconnected--------------", i3)
+
 	cfg.one(15, servers-1, true)
+	DPrintf("--------------append(15)--------------")
+
 	cfg.start1(i3, cfg.applier)
 	cfg.connect(i3)
+	DPrintf("--------------i3:%d, restarted--------------", i3)
 
 	cfg.one(16, servers, true)
+	DPrintf("--------------append(16)--------------")
 
 	cfg.end()
 }

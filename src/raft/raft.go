@@ -80,7 +80,8 @@ type Raft struct {
 	currentTerm int         // latest Term server seen (initialized to 0 on first boot, increase monotonically)
 	voteForId   int         // CandidateId that received vote in current Term
 	log         []*LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader(first index is 1)
-	leaderId    int
+
+	leaderId int
 
 	// volatile state on all servers
 	lastHeartBeatTime time.Time // last heartbeat time
@@ -114,16 +115,25 @@ func (rf *Raft) GetState() (int, bool) {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (3C).
-	// Example:
+	// https://pkg.go.dev/encoding/gob
+	// Structs encode and decode only exported fields.
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	err := e.Encode(rf)
-	if err != nil {
-		panic("encode error")
-	}
+	err := e.Encode(rf.currentTerm)
+	checkErr(err)
+	err = e.Encode(rf.voteForId)
+	checkErr(err)
+	err = e.Encode(rf.log)
+	checkErr(err)
 	raftState := w.Bytes()
 	rf.persister.Save(raftState, nil)
 
+}
+
+func checkErr(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
 
 // restore previously persisted state.
@@ -134,11 +144,16 @@ func (rf *Raft) readPersist(data []byte) {
 	// Your code here (3C).
 	// reboot, resume where it left off
 	buf := bytes.NewBuffer(data)
-	dec := labgob.NewDecoder(buf)
-	err := dec.Decode(rf)
-	if err != nil {
-		panic("decode error")
-	}
+	d := labgob.NewDecoder(buf)
+
+	err := d.Decode(&rf.currentTerm)
+	checkErr(err)
+	err = d.Decode(&rf.voteForId)
+	checkErr(err)
+	err = d.Decode(&rf.log)
+	checkErr(err)
+
+	DPrintf("readPersist currentTerm:%d, voteForId:%d, log:%+v", rf.currentTerm, rf.voteForId, rf.log)
 }
 
 // the service says it has created a snapshot that has
@@ -269,6 +284,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 }
 
 func (rf *Raft) applyMsg() {
+
+	rf.persist() // committed logs should be persistent
 
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
