@@ -885,30 +885,37 @@ func TestFigure83C(t *testing.T) {
 
 	cfg.begin("Test (3C): Figure 8")
 
-	cfg.one(rand.Int(), 1, true)
+	x := rand.Int()
+	cfg.one(x, 1, true)
+	DTestPrintf("step1, append(%d)", x)
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {
-				_, _, ok := cfg.rafts[i].Start(rand.Int())
+				x = rand.Int()
+				_, _, ok := cfg.rafts[i].Start(x)
 				if ok {
 					leader = i
+					DTestPrintf("iter%d, step2, append(%d), leader:%d", iters, x, leader)
 				}
 			}
 		}
 
 		if (rand.Int() % 1000) < 100 {
 			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
+			DTestPrintf("iter%d, step2-10pct, sleep %d ms", iters, ms)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		} else {
 			ms := (rand.Int63() % 13)
+			DTestPrintf("iter%d, step2-90pct, sleep %d ms", iters, ms)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 
 		if leader != -1 {
 			cfg.crash1(leader)
+			DTestPrintf("iter%d, step3, crash leader:%d", iters, leader)
 			nup -= 1
 		}
 
@@ -917,6 +924,7 @@ func TestFigure83C(t *testing.T) {
 			if cfg.rafts[s] == nil {
 				cfg.start1(s, cfg.applier)
 				cfg.connect(s)
+				DTestPrintf("iter%d, step3, restarted:%d", iters, s)
 				nup += 1
 			}
 		}
@@ -926,10 +934,13 @@ func TestFigure83C(t *testing.T) {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i, cfg.applier)
 			cfg.connect(i)
+			DTestPrintf("step4, restarted:%d", i)
 		}
 	}
 
-	cfg.one(rand.Int(), servers, true)
+	x = rand.Int()
+	cfg.one(x, servers, true)
+	DTestPrintf("step 5, append(%d)", x)
 
 	cfg.end()
 }
