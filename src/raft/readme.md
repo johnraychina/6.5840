@@ -46,3 +46,7 @@ time go test -run TestBackup3B
 ```shell
 time go test -run 3B
 ```
+
+```shell
+time go test -run 3C
+```

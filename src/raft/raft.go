@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"6.5840/labgob"
 	//	"bytes"
 	"bytes"
 	"fmt"
@@ -114,12 +115,15 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (3C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(rf)
+	if err != nil {
+		panic("encode error")
+	}
+	raftState := w.Bytes()
+	rf.persister.Save(raftState, nil)
+
 }
 
 // restore previously persisted state.
@@ -128,18 +132,13 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	// reboot, resume where it left off
+	buf := bytes.NewBuffer(data)
+	dec := labgob.NewDecoder(buf)
+	err := dec.Decode(rf)
+	if err != nil {
+		panic("decode error")
+	}
 }
 
 // the service says it has created a snapshot that has
