@@ -50,3 +50,11 @@ time go test -run 3B
 ```shell
 time go test -run TestPersist13C
 ```
+
+```shell
+time go test -run TestPersist23C
+```
+
+```shell
+time go test -run TestPersist33C
+```
