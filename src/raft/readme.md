@@ -58,3 +58,7 @@ time go test -run TestPersist23C
 ```shell
 time go test -run TestPersist33C
 ```
+
+```shell
+time go test -run TestUnreliableAgree3C
+```
