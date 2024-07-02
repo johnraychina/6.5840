@@ -159,7 +159,8 @@ func (rf *Raft) readPersist(data []byte) {
 	err = d.Decode(&rf.log)
 	checkErr(err)
 
-	DPrintf("[%d]readPersist currentTerm:%d, voteForId:%d, log:%+v", rf.me, rf.currentTerm, rf.voteForId, rf.log)
+	DPrintf("[%d]readPersist currentTerm:%d, voteForId:%d", rf.me, rf.currentTerm, rf.voteForId)
+	rf.printLogs()
 }
 
 // the service says it has created a snapshot that has
@@ -345,7 +346,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if args.CommitIndex >= rf.commitIndex {
+	if args.CommitIndex >= rf.commitIndex && args.LastLogIndex >= len(rf.log)-1 {
+		DPrintf("[%d]RequestVote[grant] commitIndex:%d, LastLogIndex:%d <= [%d]commitIndex:%d, LastLogIndex:%d", rf.me, rf.commitIndex, len(rf.log), args.CandidateId, args.CommitIndex, args.LastLogIndex)
 		rf.grantVote(args)
 		reply.VoteGranted = true
 		return
@@ -481,6 +483,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	DPrintf("[%d]Kill", rf.me)
 }
 
 func (rf *Raft) killed() bool {

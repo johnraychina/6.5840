@@ -898,7 +898,7 @@ func TestFigure83C(t *testing.T) {
 				_, _, ok := cfg.rafts[i].Start(x)
 				if ok {
 					leader = i
-					DTestPrintf("iter%d, step2, append(%d), leader:%d", iters, x, leader)
+					DTestPrintf("iter%d, step2, append(%d), leader:%d", iters, x, i)
 				}
 			}
 		}
@@ -913,12 +913,14 @@ func TestFigure83C(t *testing.T) {
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 
+		// if a leader exists, kill it
 		if leader != -1 {
 			cfg.crash1(leader)
 			DTestPrintf("iter%d, step3, crash leader:%d", iters, leader)
 			nup -= 1
 		}
 
+		// if number of up servers less than 3, restart a new one.
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.rafts[s] == nil {
