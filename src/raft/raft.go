@@ -113,7 +113,7 @@ func (rf *Raft) GetState() (int, bool) {
 // second argument to persister.Save().
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
-func (rf *Raft) persist() {
+func (rf *Raft) persist(snapshot []byte) {
 	// Your code here (3C).
 	// https://pkg.go.dev/encoding/gob
 	// Structs encode and decode only exported fields.
@@ -128,7 +128,8 @@ func (rf *Raft) persist() {
 	err = e.Encode(rf.log)
 	checkErr(err)
 	raftState := w.Bytes()
-	rf.persister.Save(raftState, nil)
+
+	rf.persister.Save(raftState, snapshot)
 
 }
 
@@ -163,13 +164,17 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.printLogs()
 }
 
-// the service says it has created a snapshot that has
+// the (kvserver)service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
-
+	rf.mu.Lock()
+	rf.persist(snapshot)
+	rf.log = rf.log[index+1:]
+	DPrintf("[%d]snapshot done, cleared logs to index:%d (including)", rf.me, index)
+	rf.mu.Unlock()
 }
 
 type AppendEntriesArg struct {
@@ -301,7 +306,7 @@ func (rf *Raft) applyMsg() {
 		DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
 		rf.applyCh <- msg
 	}
-	rf.persist() // committed logs should be persistent
+	rf.persist(nil) // committed logs should be persistent
 }
 
 // example RequestVote RPC arguments structure.
@@ -397,6 +402,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	return
 }
 
+// You'll need to implement the InstallSnapshot RPC discussed in the paper that
+// allows a Raft leader to tell a lagging Raft peer to replace its state with a snapshot.
+// You will likely need to think through how InstallSnapshot should interact with the state and rules in Figure 2.
+// When a follower's Raft code receives an InstallSnapshot RPC,
+// it can use the applyCh to send the snapshot to the service in an ApplyMsg.
+// The ApplyMsg struct definition already contains the fields you will need (and which the tester expects).
+// Take care that these snapshots only advance the service's state, and don't cause it to move backwards.
+func (rf *Raft) InstallSnapshot(arg *InstallSnapshotArg, reply *InstallSnapshotReply) {
+
+}
+
+type InstallSnapshotArg struct {
+}
+type InstallSnapshotReply struct {
+}
+
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
@@ -431,6 +452,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArg, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *AppendEntriesArg, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 	return ok
 }
 
