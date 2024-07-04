@@ -58,6 +58,8 @@ const electionTimeout = 1000 * time.Millisecond
 const heartBeatTimeout = electionTimeout / 5
 const NoneCandidateId = -1
 
+var EmptyEntry = &LogEntry{Term: 0, Command: nil}
+
 type LogEntry struct {
 	Term    int
 	Command interface{}
@@ -171,8 +173,16 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
 	rf.mu.Lock()
+
+	// trim log [0~index]
+	for i := range rf.log {
+		if i >= index {
+			break
+		}
+		rf.log[i] = EmptyEntry
+	} // watch out: a trimmed log may conflict with log access statements
+
 	rf.persist(snapshot)
-	rf.log = rf.log[index+1:]
 	DPrintf("[%d]snapshot done, cleared logs to index:%d (including)", rf.me, index)
 	rf.mu.Unlock()
 }
@@ -233,7 +243,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	preLogIdx := args.PreviousLogIndex
 	preLogTerm := args.PreviousLogTerm
 	if len(args.Entries) > 0 {
-		DPrintf("[%d]AppendEntries[arg] preLogIdx:%d, preLogTerm:%+v, entries:%+v", rf.me, preLogIdx, preLogTerm, args.Entries)
+		DPrintf("[%d]AppendEntries[arg] preLogIdx:%d, preLogTerm:%+v, entries:%+v", rf.me, preLogIdx, preLogTerm, fmtEntries(args.Entries))
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose Term matches prevLogTerm (§5.3)
@@ -490,9 +500,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.printLogs()
 	rf.mu.Unlock()
 
-	go func() {
-		rf.broadCastAppendEntries(rf.log[lastLogIndex].Term, lastLogIndex)
-	}()
+	//go func() {
+	rf.broadCastAppendEntries(rf.log[lastLogIndex].Term, lastLogIndex)
+	//}()
 
 	return lastLogIndex, term, isLeader
 }
@@ -745,17 +755,17 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		// reset my timer, suppress myself from requesting vote
 		// why not reset at the start? I may have lost leadership, I can detect that in this way.
 		if success > half {
-			// todo send heartbeat immediately
-			go func() {
-				rf.commitAndApply(maxPeerTerm)
-				// for peerId := range rf.peers {
-				// 	if peerId == rf.me {
-				// 		continue
-				// 	}
-				// 	arg := rf.buildAppendArg(lastLogIndex, peerId)
-				// 	rf.sendPeerAppendEntries(peerId, arg)
-				// }
-			}()
+			// todo send heartbeat immediately, to pass the check: config.go:606: one(9081776457815707260) failed to reach agreement
+			//go func() {
+			rf.commitAndApply(maxPeerTerm)
+			//	for peerId := range rf.peers {
+			//		if peerId == rf.me {
+			//			continue
+			//		}
+			//		arg := rf.buildAppendArg(lastLogIndex, peerId)
+			//		rf.sendPeerAppendEntries(peerId, arg)
+			//	}
+			//}()
 
 			break
 		}
@@ -847,7 +857,7 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, *A
 	ok := rf.sendAppendEntries(peer, arg, reply)
 
 	if !ok {
-		// DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
+		DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
 	}
 
 	// someone get a larger Term in the same time, give up for this Term.
@@ -879,12 +889,19 @@ func (rf *Raft) initIndex(oldLeaderId int) {
 }
 
 func (rf *Raft) printLogs() {
-	var buf bytes.Buffer
-	for x := range rf.log {
-		buf.WriteString(fmt.Sprintf("[%d]%d:%v, ", x, rf.log[x].Term, rf.log[x].Command))
+	DPrintf("[%d]rf.log=[%s] commitIndex:%d, lastApplied:%d", rf.me, fmtEntries(rf.log), rf.commitIndex, rf.lastApplied)
+}
 
+func fmtEntries(entries []*LogEntry) string {
+	var buf bytes.Buffer
+	for x := range entries {
+		if entries[x] == nil || entries[x].Command == nil {
+			buf.WriteString(".")
+		} else {
+			buf.WriteString(fmt.Sprintf("[%d]%d:%v, ", x, entries[x].Term, entries[x].Command))
+		}
 	}
-	DPrintf("[%d]rf.log=[%s] commitIndex:%d, lastApplied:%d", rf.me, buf.String(), rf.commitIndex, rf.lastApplied)
+	return buf.String()
 }
 
 func (rf *Raft) printIndex(peer int, info string) {
@@ -912,7 +929,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// see GetState()
 	rf.voteForId = NoneCandidateId // candidateId start from 0 to N, default voteForId must be out of it.
 	rf.log = make([]*LogEntry, 1)  // valid log index starts from 1, pay attention!
-	rf.log[0] = &LogEntry{Term: 0} // placeholder, just in case nil pointer
+	rf.log[0] = EmptyEntry         // placeholder, just in case nil pointer
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	for i := range rf.nextIndex {

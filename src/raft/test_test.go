@@ -63,22 +63,22 @@ func TestReElection3A(t *testing.T) {
 
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
-	DPrintf("[Test1]disconnect %d", leader1)
+	DTestPrintf("[Test1]disconnect %d", leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader. and the old leader
 	// should switch to follower.
 	cfg.connect(leader1)
-	DPrintf("[Test2]connect %d", leader1)
+	DTestPrintf("[Test2]connect %d", leader1)
 	leader2 := cfg.checkOneLeader()
 
 	// if there's no quorum, no new leader should
 	// be elected.
 	cfg.disconnect(leader2)
-	DPrintf("[Test3]disconnect %d", leader2)
+	DTestPrintf("[Test3]disconnect %d", leader2)
 	cfg.disconnect((leader2 + 1) % servers)
-	DPrintf("[Test3]disconnect %d", (leader2+1)%servers)
+	DTestPrintf("[Test3]disconnect %d", (leader2+1)%servers)
 
 	time.Sleep(2 * RaftElectionTimeout)
 
@@ -88,13 +88,13 @@ func TestReElection3A(t *testing.T) {
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
-	DPrintf("[Test4]connect %d", (leader2+1)%servers)
+	DTestPrintf("[Test4]connect %d", (leader2+1)%servers)
 
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
-	DPrintf("[Test5]connect %d", leader2)
+	DTestPrintf("[Test5]connect %d", leader2)
 
 	cfg.checkOneLeader()
 
@@ -119,21 +119,21 @@ func TestManyElections3A(t *testing.T) {
 		cfg.disconnect(i1)
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
-		DPrintf("[%d][Test1]disconnect %d", ii, i1)
-		DPrintf("[%d][Test1]disconnect %d", ii, i2)
-		DPrintf("[%d][Test1]disconnect %d", ii, i3)
+		DTestPrintf("[%d][Test1]disconnect %d", ii, i1)
+		DTestPrintf("[%d][Test1]disconnect %d", ii, i2)
+		DTestPrintf("[%d][Test1]disconnect %d", ii, i3)
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
-		DPrintf("[Test1]checkOneLeader Start")
+		DTestPrintf("[Test1]checkOneLeader Start")
 		cfg.checkOneLeader()
 
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
-		DPrintf("[%d][Test2]connect %d", ii, i1)
-		DPrintf("[%d][Test2]connect %d", ii, i2)
-		DPrintf("[%d][Test3]connect %d", ii, i3)
+		DTestPrintf("[%d][Test2]connect %d", ii, i1)
+		DTestPrintf("[%d][Test2]connect %d", ii, i2)
+		DTestPrintf("[%d][Test3]connect %d", ii, i3)
 
 	}
 
@@ -297,7 +297,7 @@ func TestFailAgree3B(t *testing.T) {
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
-	DPrintf("[%d] disconnect--------------------------------", (leader+1)%servers)
+	DTestPrintf("[%d] disconnect", (leader+1)%servers)
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
@@ -309,7 +309,7 @@ func TestFailAgree3B(t *testing.T) {
 
 	// re-connect
 	cfg.connect((leader + 1) % servers)
-	DPrintf("[%d] reconnect--------------------------------", (leader+1)%servers)
+	DTestPrintf("[%d] reconnect", (leader+1)%servers)
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
@@ -523,11 +523,11 @@ func TestBackup3B(t *testing.T) {
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect((leader1 + 2) % servers)
-	DPrintf("[%d]disconnect----------------------------------------", (leader1+2)%servers)
+	DTestPrintf("[%d]disconnect", (leader1+2)%servers)
 	cfg.disconnect((leader1 + 3) % servers)
-	DPrintf("[%d]disconnect----------------------------------------", (leader1+3)%servers)
+	DTestPrintf("[%d]disconnect", (leader1+3)%servers)
 	cfg.disconnect((leader1 + 4) % servers)
-	DPrintf("[%d]disconnect----------------------------------------", (leader1+4)%servers)
+	DTestPrintf("[%d]disconnect", (leader1+4)%servers)
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
@@ -537,20 +537,20 @@ func TestBackup3B(t *testing.T) {
 	time.Sleep(RaftElectionTimeout / 2)
 
 	cfg.disconnect((leader1 + 0) % servers)
-	DPrintf("[%d]disconnect----------------------------------------", (leader1+0)%servers)
+	DTestPrintf("[%d]disconnect", (leader1+0)%servers)
 
 	cfg.disconnect((leader1 + 1) % servers)
-	DPrintf("[%d]disconnect----------------------------------------", (leader1+1)%servers)
+	DTestPrintf("[%d]disconnect", (leader1+1)%servers)
 
 	// allow other partition to recover
 	cfg.connect((leader1 + 2) % servers)
-	DPrintf("[%d]reconnect----------------------------------------", (leader1+2)%servers)
+	DTestPrintf("[%d]reconnect", (leader1+2)%servers)
 
 	cfg.connect((leader1 + 3) % servers)
-	DPrintf("[%d]reconnect----------------------------------------", (leader1+3)%servers)
+	DTestPrintf("[%d]reconnect", (leader1+3)%servers)
 
 	cfg.connect((leader1 + 4) % servers)
-	DPrintf("[%d]reconnect----------------------------------------", (leader1+4)%servers)
+	DTestPrintf("[%d]reconnect", (leader1+4)%servers)
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
@@ -564,7 +564,7 @@ func TestBackup3B(t *testing.T) {
 		other = (leader2 + 1) % servers
 	}
 	cfg.disconnect(other)
-	DPrintf("[%d]disconnect----------------------------------------", other)
+	DTestPrintf("[%d]disconnect", other)
 
 	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
@@ -580,17 +580,17 @@ func TestBackup3B(t *testing.T) {
 	// Debug = true
 
 	cfg.connect((leader1 + 0) % servers)
-	DPrintf("[%d]reconnect----------------------------------------", (leader1+0)%servers)
+	DTestPrintf("[%d]reconnect", (leader1+0)%servers)
 	cfg.connect((leader1 + 1) % servers)
-	DPrintf("[%d]reconnect----------------------------------------", (leader1+1)%servers)
+	DTestPrintf("[%d]reconnect", (leader1+1)%servers)
 	cfg.connect(other)
-	DPrintf("[%d]reconnect----------------------------------------", other)
+	DTestPrintf("[%d]reconnect", other)
 
-	DPrintf("----------------------------------------bring original leader back to life----------------------------------------")
-	DPrintf("----------------------------------------leader1:%d, leader2:%d, other:%d----------------------------------------", leader1, leader2, other)
+	DTestPrintf("bring original leader back to life")
+	DTestPrintf("leader1:%d, leader2:%d, other:%d", leader1, leader2, other)
 
 	// newLeader := cfg.checkOneLeader()
-	// DPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
+	// DTestPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
@@ -600,7 +600,7 @@ func TestBackup3B(t *testing.T) {
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
-		DPrintf("[%d]reconnect----------------------------------------", i)
+		DTestPrintf("[%d]reconnect", i)
 	}
 
 	cfg.one(rand.Int(), servers, true)
@@ -738,47 +738,47 @@ func TestPersist13C(t *testing.T) {
 		cfg.connect(i)
 	}
 
-	DPrintf("--------------all servers crash and re-started--------------")
+	DTestPrintf("all servers crash and re-started")
 	cfg.one(12, servers, true)
-	DPrintf("--------------append(12)--------------")
+	DTestPrintf("append(12)")
 
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
 	cfg.start1(leader1, cfg.applier)
 	cfg.connect(leader1)
 
-	DPrintf("--------------leader1:%d restart--------------", leader1)
+	DTestPrintf("leader1:%d restart", leader1)
 	cfg.one(13, servers, true)
-	DPrintf("--------------append(13)--------------")
+	DTestPrintf("append(13)")
 
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
-	DPrintf("--------------leader2:%d disconnected--------------", leader2)
+	DTestPrintf("leader2:%d disconnected", leader2)
 
 	cfg.one(14, servers-1, true)
-	DPrintf("--------------append(14)--------------")
+	DTestPrintf("append(14)")
 
 	cfg.start1(leader2, cfg.applier)
 	cfg.connect(leader2)
-	DPrintf("--------------leader2:%d restarted--------------", leader2)
+	DTestPrintf("leader2:%d restarted", leader2)
 
-	DPrintf("--------------start wait index:4 to be committed--------------")
+	DTestPrintf("start wait index:4 to be committed")
 	cfg.wait(4, servers, -1) // wait for leader2 to join before killing i3
-	DPrintf("--------------end wait index:4 to be committed--------------")
+	DTestPrintf("end wait index:4 to be committed")
 
 	i3 := (cfg.checkOneLeader() + 1) % servers
 	cfg.disconnect(i3)
-	DPrintf("--------------i3:%d, disconnected--------------", i3)
+	DTestPrintf("i3:%d, disconnected", i3)
 
 	cfg.one(15, servers-1, true)
-	DPrintf("--------------append(15)--------------")
+	DTestPrintf("append(15)")
 
 	cfg.start1(i3, cfg.applier)
 	cfg.connect(i3)
-	DPrintf("--------------i3:%d, restarted--------------", i3)
+	DTestPrintf("i3:%d, restarted", i3)
 
 	cfg.one(16, servers, true)
-	DPrintf("--------------append(16)--------------")
+	DTestPrintf("append(16)")
 
 	cfg.end()
 }
@@ -1194,8 +1194,10 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 
 	cfg.begin(name)
 
-	cfg.one(rand.Int(), servers, true)
+	x := rand.Int()
+	cfg.one(x, servers, true)
 	leader1 := cfg.checkOneLeader()
+	DTestPrintf("append(%d), leader:%d", x, leader1)
 
 	for i := 0; i < iters; i++ {
 		victim := (leader1 + 1) % servers
@@ -1207,27 +1209,37 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 
 		if disconnect {
 			cfg.disconnect(victim)
-			cfg.one(rand.Int(), servers-1, true)
+			x := rand.Int()
+			cfg.one(x, servers-1, true)
+			DTestPrintf("disconnect: %d then append: %d", victim, x)
 		}
 		if crash {
 			cfg.crash1(victim)
-			cfg.one(rand.Int(), servers-1, true)
+			x := rand.Int()
+			cfg.one(x, servers-1, true)
+			DTestPrintf("crashed: %d then append: %d", victim, x)
 		}
 
 		// perhaps send enough to get a snapshot
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
+		DTestPrintf("appended %d logs to get a snapshot start", nn)
 		for i := 0; i < nn; i++ {
 			cfg.rafts[sender].Start(rand.Int())
 		}
+		DTestPrintf("appended %d logs to get a snapshot end", nn)
 
 		// let applier threads catch up with the Start()'s
 		if disconnect == false && crash == false {
 			// make sure all followers have caught up, so that
 			// an InstallSnapshot RPC isn't required for
 			// TestSnapshotBasic3D().
-			cfg.one(rand.Int(), servers, true)
+			x := rand.Int()
+			DTestPrintf("append(%d)", x)
+			cfg.one(x, servers, true)
 		} else {
-			cfg.one(rand.Int(), servers-1, true)
+			x := rand.Int()
+			DTestPrintf("append(%d)", x)
+			cfg.one(x, servers-1, true)
 		}
 
 		if cfg.LogSize() >= MAXLOGSIZE {
@@ -1235,16 +1247,18 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		}
 		if disconnect {
 			// reconnect a follower, who maybe behind and
-			// needs to rceive a snapshot to catch up.
+			// needs to receive a snapshot to catch up.
 			cfg.connect(victim)
 			cfg.one(rand.Int(), servers, true)
 			leader1 = cfg.checkOneLeader()
+			DTestPrintf("reconnect: %d, may need to catchup snapshot from leader: %d", victim, leader1)
 		}
 		if crash {
 			cfg.start1(victim, cfg.applierSnap)
 			cfg.connect(victim)
 			cfg.one(rand.Int(), servers, true)
 			leader1 = cfg.checkOneLeader()
+			DTestPrintf("restarted: %d, may need to catchup snapshot from leader: %d", victim, leader1)
 		}
 	}
 	cfg.end()

@@ -70,3 +70,10 @@ time go test -run TestFigure83C
 ```shell
 time go test -run 3C
 ```
+
+```shell
+time go test -run TestSnapshotBasic3D
+```
+
+MAXLOGSIZE=2000
+SnapShotInterval = 10
