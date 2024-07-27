@@ -577,7 +577,6 @@ func TestBackup3B(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
-	// Debug = true
 
 	cfg.connect((leader1 + 0) % servers)
 	DTestPrintf("[%d]reconnect", (leader1+0)%servers)
@@ -589,8 +588,8 @@ func TestBackup3B(t *testing.T) {
 	DTestPrintf("bring original leader back to life")
 	DTestPrintf("leader1:%d, leader2:%d, other:%d", leader1, leader2, other)
 
-	// newLeader := cfg.checkOneLeader()
-	// DTestPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
+	newLeader := cfg.checkOneLeader()
+	DTestPrintf("newLeader is :%d  %t", newLeader, newLeader == other) // newLeader should be the largest commit index
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {

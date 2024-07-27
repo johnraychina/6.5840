@@ -201,7 +201,7 @@ type AppendEntriesArg struct {
 type AppendEntriesReply struct {
 	Success      bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 	Term         int  // currentTerm, for leader to update itself
-	LastLogIndex int  // backoff
+	LastLogIndex int  // backoff to LastLogIndex
 }
 
 //All Servers:
@@ -223,20 +223,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	reply.LastLogIndex = len(rf.log) - 1
 
 	//1. Reply false if Term < currentTerm (§5.1)
-	if args.Term < rf.currentTerm {
+	if rf.currentTerm > args.Term {
 		//sorry, you're not leader anymore
-		DPrintf("[%d]AppendEntries[TermTooSmall] --> [%d]: my term:%d > arg term:%d", rf.me, args.LeaderId, rf.currentTerm, args.Term)
+		DPrintf("[%d --> %d]AppendEntries[LeaderTermTooSmall] %d > %d", rf.me, args.LeaderId, rf.currentTerm, args.Term)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
 
-	// if one server’s current term is smaller than the other’s, then it updates its current term to the larger value
-	// If a candidate or leader discovers that its term is out of date, it immediately reverts to follower state.
+	// all servers:
+	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 	if args.Term > rf.currentTerm {
 		if _, isLeader := rf.GetState(); isLeader {
+			rf.mu.Lock()
+			rf.currentTerm = args.Term
 			rf.leaderId = args.LeaderId
 			rf.voteForId = args.LeaderId
+			rf.lastHeartBeatTime = time.Now()
+			rf.mu.Unlock()
 		}
 	}
 
@@ -247,19 +251,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose Term matches prevLogTerm (§5.3)
-	if preLogIdx >= 1 {
-		if len(rf.log) <= preLogIdx {
-			DPrintf("[%d]AppendEntries[PreIndexTooLarge] len:%d <= preLogIdx:%d, backoff", rf.me, len(rf.log), preLogIdx)
-			reply.LastLogIndex = len(rf.log) - 1 // need backoff nextIndex to the peer last log index
-			reply.Success = false
-			return
-		}
-		if rf.log[preLogIdx].Term != preLogTerm {
-			DPrintf("[%d]AppendEntries[TermConflict] index:%d, term:%d != preLogTerm:%d, backoff", rf.me, preLogIdx, rf.log[preLogIdx].Term, preLogTerm)
-			reply.LastLogIndex = preLogIdx // need backoff nextIndex to the previous term
-			reply.Success = false
-			return
-		}
+	lastLogIndex := len(rf.log) - 1
+	if lastLogIndex < preLogIdx {
+		DPrintf("[%d]AppendEntries[PreIndexTooLarge] len:%d <= preLogIdx:%d, backoff", rf.me, len(rf.log), preLogIdx)
+		reply.LastLogIndex = len(rf.log) - 1 // need backoff nextIndex to the peer last log index
+		reply.Success = false
+		return
+	}
+	if rf.log[preLogIdx].Term != preLogTerm {
+		DPrintf("[%d]AppendEntries[TermConflict] index:%d, term:%d != preLogTerm:%d, backoff", rf.me, preLogIdx, rf.log[preLogIdx].Term, preLogTerm)
+		reply.LastLogIndex = rf.lastLogIndexBeforeTermAt(preLogIdx) // need backoff nextIndex to the previous term
+		reply.Success = false
+		return
 	}
 
 	rf.mu.Lock()
@@ -269,21 +272,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	rf.leaderId = args.LeaderId
 	//rf.voteForId = args.LeaderId
 
-	// 3. If an existing entry conflicts with a new one (same index but different terms),
-	// delete the existing entry and all that follow it (§5.3)
-	if preLogIdx >= 1 && len(rf.log) > preLogIdx+1 && rf.log[preLogIdx].Term != preLogTerm {
-		rf.delSince(preLogIdx)
-		// rf.printLogs()
-	}
-
-	// 4. Append any new entries not already in the log
 	base := preLogIdx + 1
 	for i, e := range args.Entries {
 		if len(rf.log) > base+i {
 			//overwrite existing
+			// 3. If an existing entry conflicts with a new one (same index but different terms),
+			// delete the existing entry and all that follow it (§5.3)
 			rf.log[base+i] = e
 			DPrintf("[%d]AppendEntries[overwrite] index:%d, entry:%+v", rf.me, base+i, e)
 		} else {
+			// 4. Append any new entries not already in the log
 			rf.log = append(rf.log, e)
 			DPrintf("[%d]AppendEntries[append] index:%d, entry:%+v", rf.me, len(rf.log)-1, e)
 		}
@@ -305,6 +303,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	rf.mu.Unlock()
 }
 
+func (rf *Raft) lastLogIndexBeforeTermAt(idx int) int {
+
+	for i, entry := range rf.log {
+		if i < idx && entry.Term < rf.log[idx].Term {
+			return i
+		}
+	}
+	return 0
+}
+
 func (rf *Raft) applyMsg() {
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
@@ -313,10 +321,10 @@ func (rf *Raft) applyMsg() {
 			Command:      rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
-		DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
 		rf.applyCh <- msg
+		DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
 	}
-	rf.persist(nil) // committed logs should be persistent
+	// rf.persist(nil) // committed logs should be persistent
 }
 
 // example RequestVote RPC arguments structure.
@@ -360,18 +368,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if rf.currentTerm < args.Term {
-		DPrintf("[%d]RequestVote[grant-Term] currentTerm:%d < [%d]%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
-		reply.VoteGranted = rf.grantVote(args)
-		return
-	}
+	// if rf.currentTerm < args.Term {
+	// 	if myLastLogIndex <= args.LastLogIndex {
+	// 		DPrintf("[%d]RequestVote[grant-Term] currentTerm:%d < [%d]%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+	// 		reply.VoteGranted = rf.grantVote(args)
+	// 		return
+	// 	}
+	// }
 
 	// -------------------- in the same term, compare last log -------------------- //
 
 	// 2. If votedFor is null or CandidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	// I'm not voting, or I've voted for you!
-	if rf.voteForId == NoneCandidateId || rf.voteForId == args.CandidateId {
+	if args.Term > rf.currentTerm || rf.voteForId == NoneCandidateId || rf.voteForId == args.CandidateId {
 		if myLastLog.Term > args.LastLogTerm {
 			DPrintf("[%d]RequestVote[reject-LastLogTerm] %d > [%d]%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 			return
@@ -474,9 +484,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	rf.log = append(rf.log, &LogEntry{Term: term, Command: command})
 	lastLogIndex := len(rf.log) - 1
+	rf.mu.Unlock()
+
 	DPrintf("[%d]New client command, lastLogIndex:%d, command:%v", rf.me, lastLogIndex, command)
 	rf.printLogs()
-	rf.mu.Unlock()
 
 	go func() {
 		rf.broadCastAppendEntries(rf.log[lastLogIndex].Term, lastLogIndex)
@@ -587,6 +598,7 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 
 	grantCh := make(chan int, len(rf.peers))
 	rejectCh := make(chan int, len(rf.peers))
+	voteTimer := time.NewTimer(100 * time.Millisecond)
 
 	for i := range rf.peers {
 		if i == rf.me {
@@ -632,15 +644,17 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 	half := len(rf.peers) / 2
 	granted := 1 // I've voted for myself
 	rejected := 0
-	for !rf.killed() {
+	for !rf.killed() && rf.currentTerm == currentTerm {
+		if granted > half || rejected > half {
+			break
+		}
 		select {
+		case <-voteTimer.C:
+			break
 		case <-grantCh:
 			granted++
 		case <-rejectCh:
 			rejected++
-		}
-		if granted > half || rejected > half {
-			break
 		}
 	}
 
@@ -661,8 +675,10 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 	successCh := make(chan int, len(rf.peers))
 	failCh := make(chan int, len(rf.peers))
 
+	rf.mu.Lock()
 	rf.nextIndex[rf.me] = lastLogIndex + 1
 	rf.matchIndex[rf.me] = lastLogIndex
+	rf.mu.Unlock()
 
 	for i := range rf.peers {
 		if i == rf.me {
@@ -729,7 +745,7 @@ func (rf *Raft) broadCastAppendEntries(currentTerm int, lastLogIndex int) {
 		if success > half {
 			// todo send heartbeat immediately, to pass the check: config.go:606: one(9081776457815707260) failed to reach agreement
 			//go func() {
-			rf.commitAndApply(maxPeerTerm)
+			rf.commitAndApply()
 			//	for peerId := range rf.peers {
 			//		if peerId == rf.me {
 			//			continue
@@ -766,15 +782,16 @@ func (rf *Raft) incrementIndex(peerId int, arg *AppendEntriesArg) {
 	rf.mu.Unlock()
 }
 
-func (rf *Raft) commitAndApply(maxPeerTerm int) {
+func (rf *Raft) commitAndApply() {
 	rf.mu.Lock()
-	rf.currentTerm = max(maxPeerTerm, rf.currentTerm) // heartbeat done, update term
 	rf.lastHeartBeatTime = time.Now()
 	//If there exists an N such that N > commitIndex, a majority
 	// of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 	N := majorityIndex(rf.matchIndex)
-	rf.commitIndex = max(N, rf.commitIndex)
-	rf.printIndex(rf.me, "over a half")
+	if rf.log[N].Term == rf.currentTerm {
+		rf.commitIndex = max(N, rf.commitIndex)
+		rf.printIndex(rf.me, "over a half")
+	}
 
 	// leader commit apply message
 	// need lock, as Start()->append log and tick()->applyMsg run in different goroutines
