@@ -328,7 +328,6 @@ type RequestVoteArgs struct {
 	CandidateId  int // candidate requesting vote
 	LastLogIndex int // index of candidate's last log entry (I think it's largest committed one, a candidate with the longest log doesn't necessary be the largest committed)
 	LastLogTerm  int //Term of candidate's last log entry (I think it's last committed one)
-	CommitIndex  int
 }
 
 // example RequestVote RPC reply structure.
@@ -354,62 +353,41 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	myLastLogIndex := len(rf.log) - 1
 	myLastLog := rf.log[myLastLogIndex]
 
+	// 1. Reply false if Term < currentTerm (§5.1)
 	// I've voted for larger term, you're late! but you can request vote for the next term
-	if args.Term < rf.currentTerm {
-		DPrintf("[%d]RequestVote[reject] currentTerm:%d > [%d]term:%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
-		reply.VoteGranted = false
+	if rf.currentTerm > args.Term {
+		DPrintf("[%d]RequestVote[reject-Term] %d > [%d]%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		return
 	}
 
-	if args.CommitIndex >= rf.commitIndex && args.LastLogIndex >= len(rf.log)-1 {
-		DPrintf("[%d]RequestVote[grant] commitIndex:%d, LastLogIndex:%d <= [%d]commitIndex:%d, LastLogIndex:%d", rf.me, rf.commitIndex, len(rf.log), args.CandidateId, args.CommitIndex, args.LastLogIndex)
-		rf.grantVote(args)
-		reply.VoteGranted = true
+	if rf.currentTerm < args.Term {
+		DPrintf("[%d]RequestVote[grant-Term] currentTerm:%d < [%d]%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+		reply.VoteGranted = rf.grantVote(args)
 		return
 	}
 
 	// -------------------- in the same term, compare last log -------------------- //
 
+	// 2. If votedFor is null or CandidateId, and candidate’s log is at
+	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	// I'm not voting, or I've voted for you!
 	if rf.voteForId == NoneCandidateId || rf.voteForId == args.CandidateId {
-
-		if len(rf.log) <= 1 {
-			rf.grantVote(args)
-			reply.VoteGranted = true
+		if myLastLog.Term > args.LastLogTerm {
+			DPrintf("[%d]RequestVote[reject-LastLogTerm] %d > [%d]%d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 			return
-		}
-
-		if args.LastLogTerm > myLastLog.Term {
-			rf.grantVote(args)
-			reply.VoteGranted = true
-			return
-		}
-
-		//reject vote: arg.Term >= currentTerm and arg.LastLogTerm < myLastLogTerm
-		// bad case: lower term leader keep syncing, while split old leader keep requesting vote by incrementing its term
-		if args.LastLogTerm < myLastLog.Term {
-			reply.VoteGranted = false
-			return
-		}
-
-		// last log term equal
-
-		// candidate's log index equal or larger than me
-		if args.LastLogIndex >= myLastLogIndex {
-			rf.grantVote(args)
-			reply.VoteGranted = true
+		} else if myLastLogIndex > args.LastLogIndex {
+			DPrintf("[%d]RequestVote[reject-LastLogIndex] %d > [%d]%d", rf.me, myLastLogIndex, args.CandidateId, args.LastLogIndex)
 			return
 		} else {
-			// candidate's log index less than me: reject
-			reply.VoteGranted = false
+			DPrintf("[%d]RequestVote[reject-LastLogIndex] %d > [%d]%d", rf.me, myLastLogIndex, args.CandidateId, args.LastLogIndex)
+			reply.VoteGranted = rf.grantVote(args)
 			return
 		}
+	} else {
+		// I won't vote two candidates in the same term.
+		DPrintf("[%d]RequestVote[reject-ChangeVote] term:%d, voteForId:%d != candidateId:%d", rf.me, rf.currentTerm, rf.voteForId, args.CandidateId)
+		return
 	}
-
-	// I won't vote two candidates in the same term.
-	DPrintf("[%d]RequestVote[reject] term:%d, voteForId:%d != candidateId:%d", rf.me, rf.currentTerm, rf.voteForId, args.CandidateId)
-
-	return
 }
 
 // You'll need to implement the InstallSnapshot RPC discussed in the paper that
@@ -500,9 +478,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.printLogs()
 	rf.mu.Unlock()
 
-	//go func() {
-	rf.broadCastAppendEntries(rf.log[lastLogIndex].Term, lastLogIndex)
-	//}()
+	go func() {
+		rf.broadCastAppendEntries(rf.log[lastLogIndex].Term, lastLogIndex)
+	}()
 
 	return lastLogIndex, term, isLeader
 }
@@ -540,73 +518,68 @@ func (rf *Raft) killed() bool {
 //of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 
 func (rf *Raft) ticker() {
-	skipSleep := false
+
 	for rf.killed() == false {
 		// Check if a leader election should be started.
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		if !skipSleep {
+		if rf.lastHeartBeatTime.Add(electionTimeout).After(time.Now()) {
+			// pause for a random amount of time between 50 and 350 milliseconds.
 			ms := 50 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
+			continue
 		}
-		skipSleep = false
 
-		if time.Now().After(rf.lastHeartBeatTime.Add(electionTimeout)) {
+		// vote for myself
+		rf.mu.Lock()
+		rf.leaderId = NoneCandidateId
+		rf.voteForId = rf.me
+		rf.currentTerm++
+		voteTerm := rf.currentTerm
+		lastLogIndex := len(rf.log) - 1 // rf.log[0] place holder, term=0
+		lastLogTerm := rf.log[lastLogIndex].Term
+		rf.mu.Unlock()
 
-			// vote for myself
-			rf.mu.Lock()
-			rf.leaderId = NoneCandidateId
-			rf.voteForId = rf.me
-			rf.currentTerm++
-			voteTerm := rf.currentTerm
-			lastLogIndex := len(rf.log) - 1 // rf.log[0] place holder, term=0
-			lastLogTerm := rf.log[lastLogIndex].Term
-			rf.mu.Unlock()
+		// hey guys, please vote for me!
+		DPrintf("[%d]Election Start, term:%d", rf.me, voteTerm)
+		granted := rf.broadcastVote(voteTerm, lastLogIndex, lastLogTerm)
+		if rf.currentTerm != voteTerm {
+			// term changed
+			DPrintf("[%d]Election TermChanged, term:%d, currentTerm:%d", rf.me, voteTerm, rf.currentTerm)
+			continue
+		}
+		if granted*2 < len(rf.peers) {
+			DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, voteTerm, granted)
+			continue
+		}
+		DPrintf("[%d]Election Win, term:%d, currentTerm:%d", rf.me, voteTerm, rf.currentTerm)
+		rf.printLogs()
 
-			// hey guys, please vote for me!
-			DPrintf("[%d]Election Start, term:%d", rf.me, voteTerm)
-			granted := rf.broadcastVote(voteTerm, lastLogIndex, lastLogTerm)
-			if rf.currentTerm != voteTerm {
-				// term changed
-				DPrintf("[%d]Election TermChanged, term:%d, currentTerm:%d", rf.me, voteTerm, rf.currentTerm)
-				skipSleep = true // request next term vote aggressively(without sleeping)
-				continue
-			}
-			if granted*2 <= len(rf.peers) {
-				DPrintf("[%d]Election NotEnoughGrants, term:%d, granted:%d", rf.me, voteTerm, granted)
-				continue
-			}
-			DPrintf("[%d]Election Win, term:%d, currentTerm:%d", rf.me, voteTerm, rf.currentTerm)
-			rf.printLogs()
+		// nice, over half grants!
+		// hey guys, I'm the new leader!
+		rf.mu.Lock()
+		rf.leaderId = rf.me
+		rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
+		// when a new leader replaced the old one, we should init nextIndex/matchIndex
+		rf.initIndex(rf.leaderId)
+		// rf.printLogs()
+		rf.mu.Unlock()
 
-			// nice, over half grants!
-			// hey guys, I'm the new leader!
-			rf.mu.Lock()
-			rf.leaderId = rf.me
-			rf.lastHeartBeatTime = time.Now() // for GetState() return is leader
-			// when a new leader replaced the old one, we should init nextIndex/matchIndex
-			rf.initIndex(rf.leaderId)
-			// rf.printLogs()
-			rf.mu.Unlock()
+		go func() {
+			for !rf.killed() {
+				if term, isLeader := rf.GetState(); isLeader {
+					lastIdx := len(rf.log) - 1 // lastLogIndex may change between each heartbeat
+					rf.broadCastAppendEntries(term, lastIdx)
 
-			go func() {
-				for !rf.killed() {
-					if term, isLeader := rf.GetState(); isLeader {
-						lastIdx := len(rf.log) - 1 // lastLogIndex may change between each heartbeat
-						rf.broadCastAppendEntries(term, lastIdx)
+					// must smaller than electionTimeout
+					// not too small: The tester requires your Raft to elect a new leader within five seconds of the failure of the old leader (if a majority of peers can still communicate).
+					time.Sleep(heartBeatTimeout)
 
-						// must smaller than electionTimeout
-						// not too small: The tester requires your Raft to elect a new leader within five seconds of the failure of the old leader (if a majority of peers can still communicate).
-						time.Sleep(heartBeatTimeout)
-
-					} else {
-						DPrintf("Election[LeaderChanged] me:%d, term:%d, voteForId:%d", rf.me, term, rf.voteForId)
-						break // not leader
-					}
+				} else {
+					DPrintf("Election[LeaderChanged] me:%d, term:%d, voteForId:%d", rf.me, term, rf.voteForId)
+					break // not leader
 				}
-			}()
+			}
+		}()
 
-		}
 	}
 }
 
@@ -625,7 +598,6 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 			CandidateId:  rf.me,
 			LastLogIndex: lastLogIndex,
 			LastLogTerm:  lastLogTerm,
-			CommitIndex:  rf.lastApplied,
 		}
 		reply := &RequestVoteReply{}
 
@@ -839,7 +811,7 @@ func majorityIndex(matchIndex []int) int {
 	return temp[len(temp)/2] // the middle value
 }
 
-func (rf *Raft) grantVote(args *RequestVoteArgs) {
+func (rf *Raft) grantVote(args *RequestVoteArgs) bool {
 	rf.mu.Lock() // guard the access to rf.log and rf.voteFor
 	defer rf.mu.Unlock()
 
@@ -847,6 +819,7 @@ func (rf *Raft) grantVote(args *RequestVoteArgs) {
 	rf.voteForId = args.CandidateId
 	rf.currentTerm = args.Term
 	rf.leaderId = NoneCandidateId // convert to follower
+	return true
 }
 
 func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, *AppendEntriesReply) {
@@ -880,6 +853,7 @@ func (rf *Raft) delSince(preIdx int) {
 func (rf *Raft) initIndex(oldLeaderId int) {
 	if oldLeaderId != rf.me {
 		for i := range rf.nextIndex {
+			// initialized to leader last log index + 1
 			rf.nextIndex[i] = len(rf.log)
 		}
 		for i := range rf.matchIndex {
@@ -933,6 +907,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	for i := range rf.nextIndex {
+		// todo for each server, index of the next log entry to send to that server (initialized to leaderlast log index + 1)
 		rf.nextIndex[i] = 1
 	}
 	for i := range rf.matchIndex {
