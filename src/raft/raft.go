@@ -538,16 +538,16 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 
-	for rf.killed() == false {
-		// Check if a leader election should be started.
-		if rf.nextElectionTime.After(time.Now()) {
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
+	for !rf.killed() {
 
 		// pause for a random amount of time between 50 and 350 milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		// Check if a leader election should be started.
+		if rf.nextElectionTime.After(time.Now()) {
+			continue
+		}
 
 		// vote for myself
 		rf.mu.Lock()
@@ -584,23 +584,20 @@ func (rf *Raft) ticker() {
 		// rf.printLogs()
 		rf.mu.Unlock()
 
-		go func() {
-			for !rf.killed() {
-				if !rf.IsLeader() {
-					DPrintf("Election[LeaderChanged] me:%d, term:%d, voteForId:%d", rf.me, rf.currentTerm, rf.voteForId)
-					break // break if not a leader
-				}
-
-				timeout := time.Now().Add(heartBeatTimeout)
-
-				rf.broadCastAppendEntries()
-
-				// must smaller than electionTimeout
-				// not too small: The tester requires your Raft to elect a new leader within five seconds of the failure of the old leader (if a majority of peers can still communicate).
-				time.Sleep(timeout.Sub(time.Now()))
+		for !rf.killed() {
+			if !rf.IsLeader() {
+				DPrintf("Election[LeaderChanged] me:%d, term:%d, voteForId:%d", rf.me, rf.currentTerm, rf.voteForId)
+				break // break if not a leader
 			}
-		}()
 
+			timeout := time.Now().Add(heartBeatTimeout)
+
+			rf.broadCastAppendEntries()
+
+			// must smaller than electionTimeout
+			// not too small: The tester requires your Raft to elect a new leader within five seconds of the failure of the old leader (if a majority of peers can still communicate).
+			time.Sleep(timeout.Sub(time.Now()))
+		}
 	}
 }
 
