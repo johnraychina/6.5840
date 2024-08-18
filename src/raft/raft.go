@@ -546,14 +546,15 @@ func (rf *Raft) ticker() {
 
 	for !rf.killed() {
 
+		// Check if a leader election should be started.
+		if rf.nextElectionTime.After(time.Now()) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
 		// pause for a random amount of time between 50 and 350 milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-
-		// Check if a leader election should be started.
-		if rf.nextElectionTime.After(time.Now()) {
-			continue
-		}
 
 		// vote for myself
 		rf.mu.Lock()
