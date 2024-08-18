@@ -129,10 +129,12 @@ func (rf *Raft) persist(snapshot []byte) {
 	e := labgob.NewEncoder(w)
 	err := e.Encode(rf.currentTerm)
 	checkErr(err)
-	err = e.Encode(rf.commitIndex)
+	err = e.Encode(rf.voteForId)
 	checkErr(err)
-	err = e.Encode(rf.lastApplied)
-	checkErr(err)
+	// err = e.Encode(rf.commitIndex)
+	// checkErr(err)
+	// err = e.Encode(rf.lastApplied)
+	// checkErr(err)
 	err = e.Encode(rf.log)
 	checkErr(err)
 	raftState := w.Bytes()
@@ -160,11 +162,12 @@ func (rf *Raft) readPersist(data []byte) {
 	// see persist()
 	err := d.Decode(&rf.currentTerm)
 	checkErr(err)
-	err = d.Decode(&rf.commitIndex)
+	err = d.Decode(&rf.voteForId)
 	checkErr(err)
-	err = d.Decode(&rf.lastApplied)
-	checkErr(err)
-	rf.voteForId = NoneCandidateId
+	// err = d.Decode(&rf.commitIndex)
+	// checkErr(err)
+	// err = d.Decode(&rf.lastApplied)
+	// checkErr(err)
 	err = d.Decode(&rf.log)
 	checkErr(err)
 
@@ -325,7 +328,7 @@ func (rf *Raft) applyMsg() {
 		rf.applyCh <- msg
 		DPrintf("[%d]ApplyMsg: %+v", rf.me, msg)
 	}
-	// rf.persist(nil) // committed logs should be persistent
+	rf.persist(nil) // committed logs should be persistent
 }
 
 // example RequestVote RPC arguments structure.
@@ -343,8 +346,9 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
-	Term        int  // currentTerm, for candidate to update itself
-	VoteGranted bool // true means candidate received vote
+	VoteGranted     bool // true means candidate received vote
+	Term            int  // currentTerm, for candidate to update itself
+	LogMoreUpToDate bool // reply: I have much more up-to-date logs, don't start election within a time, save you time.
 }
 
 // example RequestVote RPC handler.
@@ -386,6 +390,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// the voter denies its vote if its own log is more up-to-date than that of the candidate.
 		if myLastLog.Term > args.LastLogTerm {
 			DPrintf("[%d]RequestVote[reject-LastLogTerm]term:%d, index:%d > [%d] term:%d, index:%d", rf.me, myLastLog.Term, myLastLogIndex, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
+			reply.LogMoreUpToDate = true
 			return
 		} else if myLastLog.Term < args.LastLogTerm {
 			DPrintf("[%d]RequestVote[grant]term:%d, index:%d < [%d] term:%d, index:%d", rf.me, myLastLog.Term, myLastLogIndex, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
@@ -393,6 +398,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			return
 		} else if myLastLogIndex > args.LastLogIndex {
 			DPrintf("[%d]RequestVote[reject-LastLogIndex]term:%d, index:%d > [%d] term:%d, index:%d", rf.me, myLastLog.Term, myLastLogIndex, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
+			reply.LogMoreUpToDate = true
 			return
 		} else {
 			DPrintf("[%d]RequestVote[grant]term:%d, index:%d <= [%d] term:%d, index:%d", rf.me, myLastLog.Term, myLastLogIndex, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
@@ -632,7 +638,7 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 			// why not vote for the peer here?
 			// peer may have sent RequestVote to me in another thread, and I've voted for him
 			if !reply.VoteGranted {
-				if reply.Term > rf.currentTerm {
+				if reply.Term > rf.currentTerm || reply.LogMoreUpToDate {
 					rf.turnToFollower(reply.Term)
 				}
 				rejectCh <- reply.Term
@@ -756,20 +762,18 @@ func (rf *Raft) broadCastAppendEntries() {
 
 }
 
-func (rf *Raft) turnToFollower(newTerm int) bool {
+func (rf *Raft) turnToFollower(newTerm int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	// new leader shown in new term, wait for a heartbeat
-	if rf.leaderId == rf.me && rf.currentTerm < newTerm {
+	if rf.currentTerm < newTerm {
 		DPrintf("[%d]turnToFollower, oldTerm:%d, newTerm:%d", rf.me, rf.currentTerm, newTerm)
 		rf.currentTerm = newTerm
-		rf.leaderId = NoneCandidateId
-		rf.voteForId = NoneCandidateId
-		rf.nextElectionTime = time.Now().Add(heartBeatTimeout)
-		return true
 	}
-	return false
+	rf.leaderId = NoneCandidateId
+	rf.voteForId = NoneCandidateId
+	rf.nextElectionTime = time.Now().Add(heartBeatTimeout * 2)
 }
 
 // backoff peer index
@@ -861,7 +865,7 @@ func (rf *Raft) sendPeerAppendEntries(peer int, arg *AppendEntriesArg) (bool, *A
 	ok := rf.sendAppendEntries(peer, arg, reply)
 
 	if !ok {
-		DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
+		// DPrintf("[%d -> %d]sendAppendEntries RpcError", rf.me, peer)
 	} else if !reply.Success {
 		DPrintf("[%d -> %d]sendAppendEntries Fail: %+v", rf.me, peer, reply)
 	}
@@ -950,7 +954,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 
 	// initialize from state persisted before a crash
-	// rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	// rf.nextElectionTime = time.Now().Add(20 * time.Millisecond) // avoid initial split vote

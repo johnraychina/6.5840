@@ -836,7 +836,7 @@ func TestPersist23C(t *testing.T) {
 		cfg.connect((leader1 + 4) % servers)
 		cfg.connect((leader1 + 0) % servers)
 		// all alive
-		DTestPrintf("iters:%d, step6, reconnected:[%d, %d], live:[all]", iters, (leader1+4)%servers, leader1)
+		DTestPrintf("iters:%d, step8, reconnected:[%d, %d], live:[all]", iters, (leader1+4)%servers, leader1)
 	}
 
 	cfg.one(1000, servers, true)
