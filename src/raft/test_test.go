@@ -822,12 +822,14 @@ func TestPersist23C(t *testing.T) {
 		// live servers: leader1+1/2
 		DTestPrintf("iters:%d, step5, restarted:[%d, %d], less than a half", iters, (leader1+1)%servers, (leader1+2)%servers)
 
-		time.Sleep(RaftElectionTimeout)
-
 		cfg.start1((leader1+3)%servers, cfg.applier)
 		cfg.connect((leader1 + 3) % servers)
 		// live servers: leader1+1/2/3
 		DTestPrintf("iters:%d, step6, restarted:%d, live:[%d, %d, %d]", iters, (leader1+3)%servers, (leader1+1)%servers, (leader1+2)%servers, (leader1+3)%servers)
+
+		// DTestPrintf("expected new leader:%d", (leader1+3)%servers)
+		// newLeader := cfg.checkOneLeader()
+		// DTestPrintf("actual new leader:%d", newLeader)
 
 		cfg.one(10+index, servers-2, true) //13
 		DTestPrintf("iters:%d, step7, append(%d) live:[%d, %d, %d]", iters, 10+index, (leader1+1)%servers, (leader1+2)%servers, (leader1+3)%servers)

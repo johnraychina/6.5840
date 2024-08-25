@@ -159,17 +159,24 @@ func (rf *Raft) readPersist(data []byte) {
 	buf := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(buf)
 
+	var currentTerm, voteForId int
+	var log []*LogEntry
+
 	// see persist()
-	err := d.Decode(&rf.currentTerm)
+	err := d.Decode(&currentTerm)
 	checkErr(err)
-	err = d.Decode(&rf.voteForId)
+	err = d.Decode(&voteForId)
 	checkErr(err)
 	// err = d.Decode(&rf.commitIndex)
 	// checkErr(err)
 	// err = d.Decode(&rf.lastApplied)
 	// checkErr(err)
-	err = d.Decode(&rf.log)
+	err = d.Decode(&log)
 	checkErr(err)
+
+	rf.currentTerm = currentTerm
+	rf.voteForId = voteForId
+	rf.log = log
 
 	DPrintf("[%d]readPersist currentTerm:%d, voteForId:%d", rf.me, rf.currentTerm, rf.voteForId)
 	rf.printLogs()
@@ -393,7 +400,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.LogMoreUpToDate = true
 			return
 		} else if myLastLog.Term < args.LastLogTerm {
-			DPrintf("[%d]RequestVote[grant]term:%d, index:%d < [%d] term:%d, index:%d", rf.me, myLastLog.Term, myLastLogIndex, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
+			DPrintf("[%d]RequestVote[grant]last log term:%d < [%d] last log term:%d ", rf.me, myLastLog.Term, args.CandidateId, args.LastLogTerm)
 			reply.VoteGranted = rf.grantVote(args)
 			return
 		} else if myLastLogIndex > args.LastLogIndex {
@@ -401,7 +408,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.LogMoreUpToDate = true
 			return
 		} else {
-			DPrintf("[%d]RequestVote[grant]term:%d, index:%d <= [%d] term:%d, index:%d", rf.me, myLastLog.Term, myLastLogIndex, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
+			DPrintf("[%d]RequestVote[grant]last log index:%d <= [%d] last log index:%d", rf.me, myLastLogIndex, args.CandidateId, args.LastLogIndex)
 			reply.VoteGranted = rf.grantVote(args)
 			return
 		}
@@ -612,8 +619,7 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 
 	grantCh := make(chan int, len(rf.peers))
 	rejectCh := make(chan int, len(rf.peers))
-	voteTimer := time.NewTimer(100 * time.Millisecond)
-	defer voteTimer.Stop()
+	timeout := time.Now().Add(heartBeatTimeout)
 
 	for i := range rf.peers {
 		if i == rf.me {
@@ -655,17 +661,22 @@ func (rf *Raft) broadcastVote(currentTerm int, lastLogIndex int, lastLogTerm int
 	half := len(rf.peers) / 2
 	granted := 1 // I've voted for myself
 	rejected := 0
+FOR:
 	for !rf.killed() && rf.currentTerm == currentTerm {
 		if granted > half || rejected > half {
 			break
 		}
+
 		select {
-		case <-voteTimer.C:
-			break
 		case <-grantCh:
 			granted++
 		case <-rejectCh:
 			rejected++
+		default:
+			if time.Now().After(timeout) {
+				DPrintf("[%d]request vote timeout for term:%d", rf.me, currentTerm)
+				break FOR
+			}
 		}
 	}
 
